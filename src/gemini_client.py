@@ -60,7 +60,11 @@ async def generate_review(
     styleguide: str,
 ) -> str:
     """Generate a code review using Gemini 3 Pro."""
-    system_prompt = styleguide or FALLBACK_SYSTEM_PROMPT
+    # Always use Ricky's persona — repo styleguide is supplemental patterns
+    extra = ""
+    if styleguide:
+        extra = f"\n\nAdditional coding patterns to enforce:\n{styleguide}"
+    system_prompt = FALLBACK_SYSTEM_PROMPT + extra
 
     user_prompt = f"""Review this pull request.
 
