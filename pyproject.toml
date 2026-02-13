@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ricky"
+version = "0.1.0"
+description = "Ricky LaFleur GitHub App — TPB-themed code reviewer powered by Gemini"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pyjwt[crypto]>=2.9",
+    "httpx>=0.28",
+    "google-auth>=2.36",
+    "requests>=2.32",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
