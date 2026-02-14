@@ -407,6 +407,42 @@ class GitHubClient:
         )
         return resp.json()
 
+    async def get_pr_comments(
+        self, owner: str, repo: str, pr_number: int, installation_id: int,
+    ) -> list[dict]:
+        """Fetch inline review comments on a PR."""
+        resp = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+            installation_id,
+            params={"per_page": 100},
+        )
+        return resp.json()
+
+    async def get_pr_reviews(
+        self, owner: str, repo: str, pr_number: int, installation_id: int,
+    ) -> list[dict]:
+        """Fetch top-level reviews on a PR."""
+        resp = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+            installation_id,
+            params={"per_page": 100},
+        )
+        return resp.json()
+
+    async def get_issue_comments(
+        self, owner: str, repo: str, issue_number: int, installation_id: int,
+    ) -> list[dict]:
+        """Fetch issue-level comments on a PR/issue."""
+        resp = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+            installation_id,
+            params={"per_page": 100},
+        )
+        return resp.json()
+
     async def get_commits(
         self,
         owner: str,
