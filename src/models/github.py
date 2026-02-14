@@ -143,6 +143,7 @@ class WebhookContext(BaseModel):
     issue: Issue | None = None
     check_suite: CheckSuite | None = None
     check_run: CheckRun | None = None
+    posted_comments: list[str] = []
 
     @classmethod
     def from_webhook(cls, event: str, data: dict) -> "WebhookContext":

@@ -73,7 +73,18 @@ async def quick_benchmark(ctx: WebhookContext) -> None:
 
     structured = build_diff_prompt(parsed)
 
-    raw = await gemini.generate(_PERF_PROMPT, f"Changed lines:\n{structured}")
+    already_posted = ""
+    if ctx.posted_comments:
+        already_posted = (
+            "\n\nComments already posted by earlier review tools on this PR "
+            "(DO NOT repeat these — skip any issue already covered):\n"
+            + "\n".join(ctx.posted_comments[-20:])
+        )
+
+    raw = await gemini.generate(
+        _PERF_PROMPT + already_posted,
+        f"Changed lines:\n{structured}",
+    )
     if not raw:
         return
 
@@ -107,6 +118,11 @@ async def quick_benchmark(ctx: WebhookContext) -> None:
         if line not in valid_lines:
             continue
 
+        # Skip if an earlier tool already commented on this exact line
+        if any(f"{path}:{line}" in c for c in ctx.posted_comments):
+            log.info("Skipping %s:%d — already flagged by earlier tool", path, line)
+            continue
+
         try:
             await gh.post_pr_comment(
                 owner, repo, ctx.pr.number, ctx.installation_id,
@@ -116,6 +132,7 @@ async def quick_benchmark(ctx: WebhookContext) -> None:
                 line=line,
             )
             posted += 1
+            ctx.posted_comments.append(f"{path}:{line} — {body[:200]}")
         except Exception:
             log.warning("Failed to post perf comment on %s:%d", path, line)
 

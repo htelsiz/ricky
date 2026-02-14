@@ -136,6 +136,7 @@ async def review_pr(ctx: WebhookContext) -> None:
                 line=c["line"],
             )
             posted += 1
+            ctx.posted_comments.append(f"{c['path']}:{c['line']} — {c['body'][:200]}")
         except Exception:
             log.warning("Failed to post comment on %s:%d", c["path"], c["line"])
 
@@ -147,6 +148,7 @@ async def review_pr(ctx: WebhookContext) -> None:
             commit_id=commit_sha,
             body=summary,
         )
+        ctx.posted_comments.append(f"[review summary] {summary[:200]}")
 
 
 @tool(
