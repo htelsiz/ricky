@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import pickle
 
 
 API_KEY = "sk-1234567890abcdef"  # TODO: move to env var
@@ -20,3 +21,6 @@ def read_config():
     f = open("/etc/config.json")
     data = f.read()
     return data
+
+def load_user_data(raw_bytes):
+    return pickle.loads(raw_bytes)
