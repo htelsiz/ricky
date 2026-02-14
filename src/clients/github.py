@@ -407,41 +407,46 @@ class GitHubClient:
         )
         return resp.json()
 
+    async def _fetch_paginated(
+        self, path: str, installation_id: int, max_pages: int = 3,
+    ) -> list[dict]:
+        """Fetch a paginated list endpoint, returning up to max_pages of results."""
+        all_items: list[dict] = []
+        per_page = 100
+        for page in range(1, max_pages + 1):
+            resp = await self._request(
+                "GET", path, installation_id,
+                params={"per_page": per_page, "page": page},
+            )
+            items = resp.json()
+            all_items.extend(items)
+            if len(items) < per_page:
+                break
+        return all_items
+
     async def get_pr_comments(
         self, owner: str, repo: str, pr_number: int, installation_id: int,
     ) -> list[dict]:
         """Fetch inline review comments on a PR."""
-        resp = await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
-            installation_id,
-            params={"per_page": 100},
+        return await self._fetch_paginated(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", installation_id,
         )
-        return resp.json()
 
     async def get_pr_reviews(
         self, owner: str, repo: str, pr_number: int, installation_id: int,
     ) -> list[dict]:
         """Fetch top-level reviews on a PR."""
-        resp = await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
-            installation_id,
-            params={"per_page": 100},
+        return await self._fetch_paginated(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", installation_id,
         )
-        return resp.json()
 
     async def get_issue_comments(
         self, owner: str, repo: str, issue_number: int, installation_id: int,
     ) -> list[dict]:
         """Fetch issue-level comments on a PR/issue."""
-        resp = await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
-            installation_id,
-            params={"per_page": 100},
+        return await self._fetch_paginated(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/comments", installation_id,
         )
-        return resp.json()
 
     async def get_commits(
         self,

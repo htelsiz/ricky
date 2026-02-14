@@ -1,5 +1,6 @@
 """PR review tool — the core code review functionality."""
 
+import asyncio
 import logging
 import re
 
@@ -91,14 +92,16 @@ async def review_pr(ctx: WebhookContext) -> None:
         owner, repo, ".gemini/styleguide.md", ctx.pr.head_ref, ctx.installation_id,
     ) or ""
 
-    # Fetch existing comments to avoid repeating feedback
+    # Fetch existing comments in parallel to avoid repeating feedback
     try:
-        pr_comments = await gh.get_pr_comments(owner, repo, pr_number, ctx.installation_id)
-        reviews = await gh.get_pr_reviews(owner, repo, pr_number, ctx.installation_id)
-        issue_comments = await gh.get_issue_comments(owner, repo, pr_number, ctx.installation_id)
+        pr_comments, reviews, issue_comments = await asyncio.gather(
+            gh.get_pr_comments(owner, repo, pr_number, ctx.installation_id),
+            gh.get_pr_reviews(owner, repo, pr_number, ctx.installation_id),
+            gh.get_issue_comments(owner, repo, pr_number, ctx.installation_id),
+        )
         existing_feedback = _format_existing_comments(pr_comments, reviews, issue_comments)
     except Exception:
-        log.warning("Failed to fetch existing comments, proceeding without")
+        log.warning("Failed to fetch existing comments, proceeding without", exc_info=True)
         existing_feedback = ""
 
     review = await gemini.generate_review(
