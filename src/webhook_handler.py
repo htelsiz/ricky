@@ -6,6 +6,9 @@ from .tools._registry import get_tools_for_event, get_tool_for_command
 
 # Import tool modules so they register via @tool decorator
 from .tools import review  # noqa: F401
+from .tools import size_guard  # noqa: F401
+from .tools import todo_tracker  # noqa: F401
+from .tools import ci_reporter  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
