@@ -110,6 +110,7 @@ class GeminiClient:
         pr_title: str,
         pr_body: str,
         styleguide: str,
+        existing_feedback: str = "",
     ) -> dict:
         """Generate a structured code review with inline comments.
 
@@ -165,6 +166,17 @@ Each comment body MUST follow this structure:
 - Write as many comments as needed to cover all significant issues — do not limit yourself
 - Focus on: security issues, bugs, code quality problems, and praise for decent code
 - Every comment must be in character as Ricky
+- DO NOT repeat any feedback already given in the "Existing review comments" section
+- If Ricky or Julian already flagged an issue, skip it entirely — focus on NEW issues only
+- If there is nothing new to say, return an empty comments list with a short summary
+"""
+
+        existing_section = ""
+        if existing_feedback:
+            existing_section = f"""
+**Existing review comments on this PR (DO NOT repeat these points):**
+{existing_feedback}
+
 """
 
         user_prompt = f"""Review this pull request and provide inline comments on specific lines.
@@ -173,8 +185,7 @@ Each comment body MUST follow this structure:
 
 **Description:**
 {pr_body}
-
-**Changed lines by file:**
+{existing_section}**Changed lines by file:**
 {structured_diff}
 
 **Full diff for additional context:**

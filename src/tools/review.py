@@ -1,5 +1,6 @@
 """PR review tool — the core code review functionality."""
 
+import asyncio
 import logging
 import re
 
@@ -12,6 +13,48 @@ from ._registry import tool
 log = logging.getLogger(__name__)
 
 MAX_DIFF_CHARS = 100_000
+
+_MAX_COMMENT_LEN = 200
+_MAX_TOTAL_LEN = 4000
+
+
+def _format_existing_comments(
+    pr_comments: list[dict],
+    reviews: list[dict],
+    issue_comments: list[dict],
+) -> str:
+    """Format existing PR feedback into a summary for the Gemini prompt."""
+    lines: list[str] = []
+
+    for c in pr_comments:
+        login = c.get("user", {}).get("login", "unknown")
+        tag = login.replace("[bot]", "") if login.endswith("[bot]") else "human"
+        path = c.get("path", "")
+        line_num = c.get("line") or c.get("original_line") or "?"
+        body = (c.get("body") or "")[:_MAX_COMMENT_LEN]
+        lines.append(f"[{tag}] {path}:{line_num} — {body}")
+
+    for r in reviews:
+        body = (r.get("body") or "").strip()
+        if not body:
+            continue
+        login = r.get("user", {}).get("login", "unknown")
+        tag = login.replace("[bot]", "") if login.endswith("[bot]") else "human"
+        lines.append(f"[{tag} review] {body[:_MAX_COMMENT_LEN]}")
+
+    for c in issue_comments:
+        login = c.get("user", {}).get("login", "unknown")
+        tag = login.replace("[bot]", "") if login.endswith("[bot]") else "human"
+        body = (c.get("body") or "")[:_MAX_COMMENT_LEN]
+        lines.append(f"[{tag} comment] {body}")
+
+    if not lines:
+        return ""
+
+    result = "\n".join(lines)
+    if len(result) > _MAX_TOTAL_LEN:
+        result = result[:_MAX_TOTAL_LEN] + "\n...(truncated)"
+    return result
 
 
 @tool(
@@ -49,12 +92,25 @@ async def review_pr(ctx: WebhookContext) -> None:
         owner, repo, ".gemini/styleguide.md", ctx.pr.head_ref, ctx.installation_id,
     ) or ""
 
+    # Fetch existing comments in parallel to avoid repeating feedback
+    try:
+        pr_comments, reviews, issue_comments = await asyncio.gather(
+            gh.get_pr_comments(owner, repo, pr_number, ctx.installation_id),
+            gh.get_pr_reviews(owner, repo, pr_number, ctx.installation_id),
+            gh.get_issue_comments(owner, repo, pr_number, ctx.installation_id),
+        )
+        existing_feedback = _format_existing_comments(pr_comments, reviews, issue_comments)
+    except Exception:
+        log.warning("Failed to fetch existing comments, proceeding without", exc_info=True)
+        existing_feedback = ""
+
     review = await gemini.generate_review(
         diff=diff,
         structured_diff=structured_diff,
         pr_title=ctx.pr.title,
         pr_body=ctx.pr.body,
         styleguide=styleguide,
+        existing_feedback=existing_feedback,
     )
 
     summary = review.get("summary", "")
