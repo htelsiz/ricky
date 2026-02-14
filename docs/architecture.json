@@ -1,0 +1,170 @@
+{
+    "name": "Ricky — Webhook Event Processing",
+    "steps": [
+        {
+            "id": "webhook",
+            "name": "GitHub Webhook",
+            "type": "start",
+            "owner": "Ingress",
+            "next": ["verify"]
+        },
+        {
+            "id": "verify",
+            "name": "HMAC-SHA256 Verify",
+            "type": "process",
+            "owner": "Ingress",
+            "next": ["dispatch"]
+        },
+        {
+            "id": "dispatch",
+            "name": "Event Type?",
+            "type": "decision",
+            "owner": "Router",
+            "next": [
+                {"step": "pr_tools", "condition": "pull_request"},
+                {"step": "comment_tools", "condition": "issue_comment"},
+                {"step": "ci_tools", "condition": "check_suite"}
+            ]
+        },
+        {
+            "id": "pr_tools",
+            "name": "PR Tool Dispatch",
+            "type": "subprocess",
+            "owner": "Router",
+            "next": ["review", "size_guard", "todo_tracker", "test_coverage", "benchmark", "blame", "breaking", "conflict"]
+        },
+        {
+            "id": "comment_tools",
+            "name": "Comment Tool Dispatch",
+            "type": "subprocess",
+            "owner": "Router",
+            "next": ["mention_reply", "auto_fix", "dead_code", "dep_update"]
+        },
+        {
+            "id": "ci_tools",
+            "name": "CI Tool Dispatch",
+            "type": "subprocess",
+            "owner": "Router",
+            "next": ["ci_reporter"]
+        },
+        {
+            "id": "review",
+            "name": "Code Review",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["gemini"]
+        },
+        {
+            "id": "size_guard",
+            "name": "Size Guard",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["github_api"]
+        },
+        {
+            "id": "todo_tracker",
+            "name": "TODO Tracker",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["github_api"]
+        },
+        {
+            "id": "test_coverage",
+            "name": "Test Coverage",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["github_api"]
+        },
+        {
+            "id": "benchmark",
+            "name": "Perf Smells",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["gemini"]
+        },
+        {
+            "id": "blame",
+            "name": "Hot Files",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["github_api"]
+        },
+        {
+            "id": "breaking",
+            "name": "Breaking Changes",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["github_api"]
+        },
+        {
+            "id": "conflict",
+            "name": "Merge Conflicts",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["gemini"]
+        },
+        {
+            "id": "mention_reply",
+            "name": "@ricky Reply",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["gemini"]
+        },
+        {
+            "id": "auto_fix",
+            "name": "Auto Fix",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["gemini"]
+        },
+        {
+            "id": "dead_code",
+            "name": "Dead Code",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["github_api"]
+        },
+        {
+            "id": "dep_update",
+            "name": "Dep Updates",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["pypi_npm"]
+        },
+        {
+            "id": "ci_reporter",
+            "name": "CI Diagnosis",
+            "type": "process",
+            "owner": "Tools",
+            "next": ["gemini"]
+        },
+        {
+            "id": "gemini",
+            "name": "Gemini 3 Pro",
+            "type": "database",
+            "owner": "External",
+            "next": ["github_api"]
+        },
+        {
+            "id": "pypi_npm",
+            "name": "PyPI / npm",
+            "type": "database",
+            "owner": "External",
+            "next": ["github_api"]
+        },
+        {
+            "id": "github_api",
+            "name": "GitHub API",
+            "type": "database",
+            "owner": "External",
+            "next": ["done"]
+        },
+        {
+            "id": "done",
+            "name": "Comments / Checks / Issues",
+            "type": "end",
+            "owner": "External",
+            "next": []
+        }
+    ]
+}

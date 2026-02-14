@@ -1,0 +1,74 @@
+flowchart TB
+
+webhook([GitHub Webhook])
+verify[HMAC-SHA256 Verify]
+dispatch{{Event Type?}}
+pr_tools[[PR Tool Dispatch]]
+comment_tools[[Comment Tool Dispatch]]
+ci_tools[[CI Tool Dispatch]]
+review[Code Review]
+size_guard[Size Guard]
+todo_tracker[TODO Tracker]
+test_coverage[Test Coverage]
+benchmark[Perf Smells]
+blame[Hot Files]
+breaking[Breaking Changes]
+conflict[Merge Conflicts]
+mention_reply[@ricky Reply]
+auto_fix[Auto Fix]
+dead_code[Dead Code]
+dep_update[Dep Updates]
+ci_reporter[CI Diagnosis]
+gemini[("Gemini 3 Pro")]
+pypi_npm[("PyPI / npm")]
+github_api[("GitHub API")]
+done([Comments / Checks / Issues])
+
+webhook --> verify
+verify --> dispatch
+dispatch -->|pull_request| pr_tools
+dispatch -->|issue_comment| comment_tools
+dispatch -->|check_suite| ci_tools
+pr_tools --> review
+pr_tools --> size_guard
+pr_tools --> todo_tracker
+pr_tools --> test_coverage
+pr_tools --> benchmark
+pr_tools --> blame
+pr_tools --> breaking
+pr_tools --> conflict
+comment_tools --> mention_reply
+comment_tools --> auto_fix
+comment_tools --> dead_code
+comment_tools --> dep_update
+ci_tools --> ci_reporter
+review --> gemini
+size_guard --> github_api
+todo_tracker --> github_api
+test_coverage --> github_api
+benchmark --> gemini
+blame --> github_api
+breaking --> github_api
+conflict --> gemini
+mention_reply --> gemini
+auto_fix --> gemini
+dead_code --> github_api
+dep_update --> pypi_npm
+ci_reporter --> gemini
+gemini --> github_api
+pypi_npm --> github_api
+github_api --> done
+
+%% Styling
+classDef startEnd fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff
+classDef process fill:#2196F3,stroke:#1565C0,stroke-width:2px,color:#fff
+classDef decision fill:#FF9800,stroke:#E65100,stroke-width:2px,color:#fff
+classDef subprocess fill:#607D8B,stroke:#37474F,stroke-width:2px,color:#fff
+classDef data fill:#9C27B0,stroke:#6A1B9A,stroke-width:2px,color:#fff
+classDef database fill:#FFC107,stroke:#F57F17,stroke-width:2px,color:#000
+
+class webhook,done startEnd
+class verify,review,size_guard,todo_tracker,test_coverage,benchmark,blame,breaking,conflict,mention_reply,auto_fix,dead_code,dep_update,ci_reporter process
+class dispatch decision
+class pr_tools,comment_tools,ci_tools subprocess
+class gemini,pypi_npm,github_api database
