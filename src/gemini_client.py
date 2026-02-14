@@ -1,7 +1,9 @@
 """Vertex AI client — sends diff + Ricky persona to Gemini 3 Pro."""
 
+import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import httpx
@@ -55,38 +57,59 @@ def _vertex_url() -> str:
 
 async def generate_review(
     diff: str,
+    structured_diff: str,
     pr_title: str,
     pr_body: str,
     styleguide: str,
-) -> str:
-    """Generate a code review using Gemini 3 Pro."""
+) -> dict:
+    """Generate a code review with inline comments using Gemini 3 Pro.
+
+    Returns:
+        {"summary": str, "comments": [{"path": str, "line": int, "body": str}]}
+    """
     # Always use Ricky's persona — repo styleguide is supplemental patterns
     extra = ""
     if styleguide:
         extra = f"\n\nAdditional coding patterns to enforce:\n{styleguide}"
     system_prompt = FALLBACK_SYSTEM_PROMPT + extra
 
-    user_prompt = f"""Review this pull request.
+    system_prompt += """
+
+You MUST respond with valid JSON only, no markdown fences, no extra text.
+Use this exact format:
+{
+  "summary": "Brief Ricky-style summary of the PR with an overall verdict (Decent! or shit-winds warning)",
+  "comments": [
+    {"path": "src/example.py", "line": 42, "body": "Your inline comment in character as Ricky"}
+  ]
+}
+
+Rules for comments:
+- "path" must exactly match one of the file paths shown in the changed lines below
+- "line" must exactly match one of the line numbers (L__) shown below for that file
+- "body" should be a focused comment about that specific line/change, in character
+- Include 1-5 comments targeting the most important issues or praise-worthy code
+- Use Rickyisms naturally in each comment
+"""
+
+    user_prompt = f"""Review this pull request and provide inline comments on specific lines.
 
 **Title:** {pr_title}
 
 **Description:**
 {pr_body}
 
-**Diff:**
+**Changed lines by file:**
+{structured_diff}
+
+**Full diff for context:**
 ```diff
 {diff}
 ```
+"""
 
-Provide a code review as Ricky LaFleur. Include:
-1. A Ricky-style summary of what the PR does
-2. Any bugs, security issues, or code quality problems you spot
-3. Suggestions for improvement
-4. An overall verdict (Decent! or shit-winds warning)
-
-Keep your review concise but thorough. Use Rickyisms naturally."""
-
-    return await _call_gemini(system_prompt, user_prompt)
+    raw = await _call_gemini(system_prompt, user_prompt)
+    return _parse_review_response(raw)
 
 
 async def generate_reply(question: str, context: str) -> str:
@@ -144,3 +167,39 @@ async def _call_gemini(system_prompt: str, user_prompt: str) -> str:
     except (KeyError, IndexError):
         logger.error("Unexpected Gemini response: %s", data)
         return ""
+
+
+def _parse_review_response(raw: str) -> dict:
+    """Parse Gemini's JSON response into a structured review dict.
+
+    Falls back to a summary-only review if JSON parsing fails.
+    """
+    if not raw:
+        return {"summary": "", "comments": []}
+
+    # Strip markdown code fences if Gemini wrapped the JSON
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict) and "summary" in parsed:
+            comments = parsed.get("comments", [])
+            valid_comments = []
+            for c in comments:
+                if (
+                    isinstance(c, dict)
+                    and isinstance(c.get("path"), str)
+                    and isinstance(c.get("line"), int)
+                    and isinstance(c.get("body"), str)
+                ):
+                    valid_comments.append(c)
+                else:
+                    logger.warning("Dropping malformed comment: %s", c)
+            return {"summary": parsed["summary"], "comments": valid_comments}
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning("Failed to parse JSON review, falling back to raw text: %s", e)
+
+    return {"summary": raw, "comments": []}
