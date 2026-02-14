@@ -18,6 +18,12 @@ _MAX_COMMENT_LEN = 200
 _MAX_TOTAL_LEN = 4000
 
 
+def _user_tag(comment: dict) -> str:
+    """Extract a display tag from a comment's user login."""
+    login = comment.get("user", {}).get("login", "unknown")
+    return login.removesuffix("[bot]") if login.endswith("[bot]") else "human"
+
+
 def _format_existing_comments(
     pr_comments: list[dict],
     reviews: list[dict],
@@ -25,36 +31,40 @@ def _format_existing_comments(
 ) -> str:
     """Format existing PR feedback into a summary for the Gemini prompt."""
     lines: list[str] = []
+    total_len = 0
 
     for c in pr_comments:
-        login = c.get("user", {}).get("login", "unknown")
-        tag = login.replace("[bot]", "") if login.endswith("[bot]") else "human"
         path = c.get("path", "")
         line_num = c.get("line") or c.get("original_line") or "?"
         body = (c.get("body") or "")[:_MAX_COMMENT_LEN]
-        lines.append(f"[{tag}] {path}:{line_num} — {body}")
+        entry = f"[{_user_tag(c)}] {path}:{line_num} — {body}"
+        total_len += len(entry) + 1
+        if total_len > _MAX_TOTAL_LEN:
+            lines.append("...(truncated)")
+            return "\n".join(lines)
+        lines.append(entry)
 
     for r in reviews:
         body = (r.get("body") or "").strip()
         if not body:
             continue
-        login = r.get("user", {}).get("login", "unknown")
-        tag = login.replace("[bot]", "") if login.endswith("[bot]") else "human"
-        lines.append(f"[{tag} review] {body[:_MAX_COMMENT_LEN]}")
+        entry = f"[{_user_tag(r)} review] {body[:_MAX_COMMENT_LEN]}"
+        total_len += len(entry) + 1
+        if total_len > _MAX_TOTAL_LEN:
+            lines.append("...(truncated)")
+            return "\n".join(lines)
+        lines.append(entry)
 
     for c in issue_comments:
-        login = c.get("user", {}).get("login", "unknown")
-        tag = login.replace("[bot]", "") if login.endswith("[bot]") else "human"
         body = (c.get("body") or "")[:_MAX_COMMENT_LEN]
-        lines.append(f"[{tag} comment] {body}")
+        entry = f"[{_user_tag(c)} comment] {body}"
+        total_len += len(entry) + 1
+        if total_len > _MAX_TOTAL_LEN:
+            lines.append("...(truncated)")
+            return "\n".join(lines)
+        lines.append(entry)
 
-    if not lines:
-        return ""
-
-    result = "\n".join(lines)
-    if len(result) > _MAX_TOTAL_LEN:
-        result = result[:_MAX_TOTAL_LEN] + "\n...(truncated)"
-    return result
+    return "\n".join(lines)
 
 
 @tool(
