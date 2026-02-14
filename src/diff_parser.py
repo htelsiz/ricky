@@ -51,6 +51,8 @@ def parse_diff(raw_diff: str) -> list[dict]:
             hunk_body = chunk[hunk_start:hunk_end]
 
             for line in hunk_body.split("\n"):
+                if not line and not lines:
+                    continue  # skip leading empty from split
                 if line.startswith("+"):
                     lines.append({
                         "number": new_line_num,
@@ -62,14 +64,15 @@ def parse_diff(raw_diff: str) -> list[dict]:
                     pass  # deleted lines don't appear in new file
                 elif line.startswith("\\"):
                     pass  # "\ No newline at end of file"
-                elif line.startswith(" ") or line == "":
-                    content = line[1:] if line.startswith(" ") else ""
+                elif line.startswith(" "):
                     lines.append({
                         "number": new_line_num,
-                        "content": content,
+                        "content": line[1:],
                         "type": "context",
                     })
                     new_line_num += 1
+                elif line == "":
+                    pass  # trailing empty from split, skip
 
         if lines:
             files.append({"path": path, "lines": lines})
