@@ -11,7 +11,7 @@ flowchart TB
 
 webhook([GitHub Webhook])
 verify[HMAC-SHA256 Verify]
-dispatch{{Event Type?}}
+dispatch{{"Event Type?"}}
 pr_tools[[PR Tool Dispatch]]
 comment_tools[[Comment Tool Dispatch]]
 ci_tools[[CI Tool Dispatch]]
@@ -23,7 +23,7 @@ benchmark[Perf Smells]
 blame[Hot Files]
 breaking[Breaking Changes]
 conflict[Merge Conflicts]
-mention_reply[@ricky Reply]
+mention_reply["@ricky Reply"]
 auto_fix[Auto Fix]
 dead_code[Dead Code]
 dep_update[Dep Updates]
