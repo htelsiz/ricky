@@ -51,6 +51,9 @@ async def handle_pull_request(data: dict) -> None:
 
     # Parse diff for structured line info
     parsed_diff = parse_diff(diff)
+    if not parsed_diff:
+        logger.info("No reviewable changes in PR #%d (deletions/binary only)", pr_number)
+        return
     structured_diff = build_diff_prompt(parsed_diff)
 
     # Try to fetch the repo's styleguide
@@ -98,7 +101,7 @@ async def handle_pull_request(data: dict) -> None:
         }
     else:
         # Fallback: no valid inline comments, post summary as body
-        payload = {"body": summary, "event": "COMMENT"}
+        payload = {"commit_id": commit_sha, "body": summary, "event": "COMMENT"}
 
     # Post the review
     resp = await github_api(
@@ -119,7 +122,7 @@ async def handle_pull_request(data: dict) -> None:
                 "POST",
                 f"/repos/{owner}/{repo_name}/pulls/{pr_number}/reviews",
                 installation_id,
-                json={"body": summary, "event": "COMMENT"},
+                json={"commit_id": commit_sha, "body": summary, "event": "COMMENT"},
             )
             if fallback_resp.status_code in (200, 201):
                 logger.info("Posted fallback review on PR #%d", pr_number)

@@ -4,36 +4,36 @@ import re
 
 
 def parse_diff(raw_diff: str) -> list[dict]:
-    """Parse a unified diff into per-file changed-line data.
+    """Parse a unified diff into per-file line data.
 
     Returns:
-        [{"path": "src/foo.py", "lines": [{"number": 42, "content": "new code"}, ...]}]
+        [{"path": "src/foo.py", "lines": [
+            {"number": 42, "content": "new code", "type": "add"},
+            {"number": 43, "content": "unchanged", "type": "context"},
+        ]}]
 
-    Only added/modified lines are returned since those are the lines
-    the GitHub Reviews API allows comments on (side=RIGHT).
+    Tracks both added lines (+) and context lines (unchanged lines visible
+    in the diff hunk). GitHub's Reviews API allows comments on ANY line
+    visible in the diff, not just added lines.
     """
     files = []
-    # Split into per-file sections
     file_chunks = re.split(r"^diff --git ", raw_diff, flags=re.MULTILINE)
 
     for chunk in file_chunks:
         if not chunk.strip():
             continue
 
-        # Extract file path from +++ b/path line
         path_match = re.search(r"^\+\+\+ b/(.+)$", chunk, re.MULTILINE)
         if not path_match:
-            continue  # binary file or deleted file
+            continue
 
         path = path_match.group(1)
 
-        # Skip deleted files (--- a/path with +++ /dev/null)
         if re.search(r"^\+\+\+ /dev/null", chunk, re.MULTILINE):
             continue
 
-        changed_lines = []
+        lines = []
 
-        # Find all hunk headers and parse each hunk
         hunk_pattern = re.compile(
             r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@.*$", re.MULTILINE
         )
@@ -42,7 +42,6 @@ def parse_diff(raw_diff: str) -> list[dict]:
         for i, hunk_match in enumerate(hunk_starts):
             new_line_num = int(hunk_match.group(1))
 
-            # Get hunk body: from after this @@ to next @@ or end of chunk
             hunk_start = hunk_match.end()
             if i + 1 < len(hunk_starts):
                 hunk_end = hunk_starts[i + 1].start()
@@ -53,21 +52,27 @@ def parse_diff(raw_diff: str) -> list[dict]:
 
             for line in hunk_body.split("\n"):
                 if line.startswith("+"):
-                    content = line[1:]  # strip the leading +
-                    changed_lines.append(
-                        {"number": new_line_num, "content": content}
-                    )
+                    lines.append({
+                        "number": new_line_num,
+                        "content": line[1:],
+                        "type": "add",
+                    })
                     new_line_num += 1
                 elif line.startswith("-"):
-                    pass  # deleted lines don't increment new file line counter
+                    pass  # deleted lines don't appear in new file
                 elif line.startswith("\\"):
                     pass  # "\ No newline at end of file"
-                else:
-                    # Context line (or empty) — increment new line counter
+                elif line.startswith(" ") or line == "":
+                    content = line[1:] if line.startswith(" ") else ""
+                    lines.append({
+                        "number": new_line_num,
+                        "content": content,
+                        "type": "context",
+                    })
                     new_line_num += 1
 
-        if changed_lines:
-            files.append({"path": path, "lines": changed_lines})
+        if lines:
+            files.append({"path": path, "lines": lines})
 
     return files
 
@@ -75,8 +80,8 @@ def parse_diff(raw_diff: str) -> list[dict]:
 def build_diff_prompt(parsed: list[dict]) -> str:
     """Format parsed diff data into a structured prompt for Gemini.
 
-    Presents each file's changed lines with line numbers so Gemini
-    can reference exact locations in its review comments.
+    Shows each file's lines with line numbers and change type markers
+    so Gemini can reference exact locations and write valid suggestions.
     """
     if not parsed:
         return "(no changed lines found)"
@@ -84,16 +89,20 @@ def build_diff_prompt(parsed: list[dict]) -> str:
     sections = []
     for file_info in parsed:
         lines_text = "\n".join(
-            f"  L{line['number']}: {line['content']}"
+            f"  L{line['number']}: {'+ ' if line['type'] == 'add' else '  '}{line['content']}"
             for line in file_info["lines"]
         )
-        sections.append(f"File: {file_info['path']}\nChanged lines:\n{lines_text}")
+        sections.append(f"File: {file_info['path']}\nLines (+ = added/changed, blank = context):\n{lines_text}")
 
     return "\n\n".join(sections)
 
 
 def valid_lines_for_path(parsed: list[dict], path: str) -> set[int]:
-    """Return the set of valid commentable line numbers for a given file path."""
+    """Return the set of valid commentable line numbers for a given file path.
+
+    Includes both added and context lines since GitHub allows
+    commenting on any line visible in the diff.
+    """
     for file_info in parsed:
         if file_info["path"] == path:
             return {line["number"] for line in file_info["lines"]}

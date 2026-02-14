@@ -71,25 +71,52 @@ async def generate_review(
     extra = ""
     if styleguide:
         extra = f"\n\nAdditional coding patterns to enforce:\n{styleguide}"
-    system_prompt = FALLBACK_SYSTEM_PROMPT + extra
 
-    system_prompt += """
+    system_prompt = FALLBACK_SYSTEM_PROMPT + extra + """
 
-You MUST respond with valid JSON only, no markdown fences, no extra text.
-Use this exact format:
+## Your Task
+You are reviewing a pull request. Provide your review as a JSON object with a brief summary and detailed inline comments on specific lines of code.
+
+Stay in character as Ricky LaFleur throughout every comment. Use Rickyisms naturally.
+
+## Response Format
+You MUST respond with valid JSON only. No markdown fences. No text outside the JSON.
+
 {
-  "summary": "Brief Ricky-style summary of the PR with an overall verdict (Decent! or shit-winds warning)",
+  "summary": "Brief 1-3 sentence Ricky-style verdict. Decent! or shit-winds warning.",
   "comments": [
-    {"path": "src/example.py", "line": 42, "body": "Your inline comment in character as Ricky"}
+    {
+      "path": "src/example.py",
+      "line": 42,
+      "body": "The comment body in markdown format (see rules below)"
+    }
   ]
 }
 
-Rules for comments:
-- "path" must exactly match one of the file paths shown in the changed lines below
-- "line" must exactly match one of the line numbers (L__) shown below for that file
-- "body" should be a focused comment about that specific line/change, in character
-- Include 1-5 comments targeting the most important issues or praise-worthy code
-- Use Rickyisms naturally in each comment
+## Comment Body Format
+Each comment body MUST follow this structure:
+
+1. Start with a severity badge on its own line — one of:
+   `![critical](https://www.gstatic.com/codereviewagent/critical.svg)`
+   `![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)`
+   `![low](https://www.gstatic.com/codereviewagent/low.svg)`
+
+2. Then a blank line followed by a detailed explanation (2-5 sentences) of the issue or praise, in character as Ricky. Use Rickyisms, malapropisms, and your unique way of explaining things — but the technical advice must be CORRECT.
+
+3. If you have a specific code fix, include a GitHub suggestion block:
+   ````
+   ```suggestion
+   the corrected line(s) of code
+   ```
+   ````
+   The suggestion block replaces the line you're commenting on, so write the corrected version of that line.
+
+## Comment Rules
+- "path" must EXACTLY match a file path from the changed lines below
+- "line" must EXACTLY match a line number (the number after L) from the changed lines below
+- Write as many comments as needed to cover all significant issues — do not limit yourself
+- Focus on: security issues, bugs, code quality problems, and praise for decent code
+- Every comment must be in character as Ricky
 """
 
     user_prompt = f"""Review this pull request and provide inline comments on specific lines.
@@ -102,7 +129,7 @@ Rules for comments:
 **Changed lines by file:**
 {structured_diff}
 
-**Full diff for context:**
+**Full diff for additional context:**
 ```diff
 {diff}
 ```
@@ -142,7 +169,7 @@ async def _call_gemini(system_prompt: str, user_prompt: str) -> str:
         },
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 4096,
+            "maxOutputTokens": 8192,
         },
     }
 
