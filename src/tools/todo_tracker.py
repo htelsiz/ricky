@@ -1,24 +1,16 @@
-"""todo_tracker — find new TODO/FIXME/HACK/XXX in PRs and create GitHub Issues.
-
-Scans the diff for added lines containing TODO markers. Optionally creates
-a GitHub Issue for each one, linked to the exact file and line.
-"""
-
-from __future__ import annotations
+"""todo_tracker — find new TODO/FIXME/HACK/XXX in PRs and create GitHub Issues."""
 
 import logging
 import re
 
 from ..clients.github import GitHubClient
-from ..config import get_settings
+from ..config import RickySettings
 from ..diff_parser import parse_diff
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
-_gh = GitHubClient()
-
-# Match TODO, FIXME, HACK, XXX (with optional colon and message)
 _TODO_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b\s*:?\s*(.*)", re.IGNORECASE)
 
 
@@ -28,22 +20,16 @@ _TODO_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b\s*:?\s*(.*)", re.IGNORECASE)
     actions=["opened", "synchronize", "reopened"],
     commands=["@ricky todos"],
 )
-async def todo_tracker(data: dict) -> None:
+async def todo_tracker(ctx: WebhookContext) -> None:
     """Scan diff for new TODO/FIXME/HACK/XXX and optionally create issues."""
-    pr = data["pull_request"]
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    assert ctx.pr is not None
+    gh = GitHubClient.from_env()
+    cfg = RickySettings()  # type: ignore[call-arg]
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    pr_number = pr["number"]
-    head_sha = pr["head"]["sha"]
-    head_ref = pr["head"]["ref"]
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
 
-    cfg = get_settings().ricky
-
-    # Fetch and parse diff
-    diff = await _gh.fetch_diff(owner, repo_name, pr_number, installation_id)
+    diff = await gh.fetch_diff(owner, repo, ctx.pr.number, ctx.installation_id)
     if not diff:
         return
 
@@ -51,7 +37,6 @@ async def todo_tracker(data: dict) -> None:
     if not parsed:
         return
 
-    # Find TODOs in added lines only
     todos: list[dict] = []
     for file_info in parsed:
         for line_info in file_info["lines"]:
@@ -67,37 +52,36 @@ async def todo_tracker(data: dict) -> None:
                 })
 
     if not todos:
-        logger.info("No new TODOs in PR #%d", pr_number)
+        log.info("No new TODOs in PR #%d", ctx.pr.number)
         return
 
-    logger.info("Found %d new TODO(s) in PR #%d", len(todos), pr_number)
+    log.info("Found %d new TODO(s) in PR #%d", len(todos), ctx.pr.number)
 
-    # Create issues if enabled
     created = 0
     if cfg.todo_create_issues:
         for t in todos:
-            link = f"https://github.com/{owner}/{repo_name}/blob/{head_sha}/{t['path']}#L{t['line']}"
+            link = f"https://github.com/{owner}/{repo}/blob/{ctx.pr.head_sha}/{t['path']}#L{t['line']}"
             issue_body = (
                 f"Found `{t['tag']}` in [{t['path']}:{t['line']}]({link}):\n\n"
                 f"> {t['text']}\n\n"
-                f"From PR #{pr_number} (`{head_ref}`)."
+                f"From PR #{ctx.pr.number} (`{ctx.pr.head_ref}`)."
             )
-            result = await _gh.create_issue(
-                owner, repo_name, installation_id,
-                title=f"{t['tag']}: {t['text'][:80]}",
-                body=issue_body,
-                labels=["tech-debt"],
-            )
-            if result:
+            try:
+                await gh.create_issue(
+                    owner, repo, ctx.installation_id,
+                    title=f"{t['tag']}: {t['text'][:80]}",
+                    body=issue_body,
+                    labels=["tech-debt"],
+                )
                 created += 1
+            except Exception:
+                log.warning("Failed to create issue for %s:%d", t["path"], t["line"])
 
-        logger.info("Created %d issue(s) from TODOs in PR #%d", created, pr_number)
+        log.info("Created %d issue(s) from TODOs in PR #%d", created, ctx.pr.number)
 
-    # Post a summary comment on the PR
     summary_lines = [f"**Found {len(todos)} new TODO(s) in this PR, boys.**\n"]
     for t in todos:
-        issue_note = ""
-        summary_lines.append(f"- `{t['tag']}` in `{t['path']}:{t['line']}` — {t['text']}{issue_note}")
+        summary_lines.append(f"- `{t['tag']}` in `{t['path']}:{t['line']}` — {t['text']}")
 
     if cfg.todo_create_issues and created > 0:
         summary_lines.append(f"\nCreated {created} issue(s) so nobody fuckin' forgets about them.")
@@ -107,7 +91,7 @@ async def todo_tracker(data: dict) -> None:
             "These TODOs are just sitting there like Corey and Trevor with nothing to do."
         )
 
-    await _gh.post_issue_comment(
-        owner, repo_name, pr_number, installation_id,
+    await gh.post_issue_comment(
+        owner, repo, ctx.pr.number, ctx.installation_id,
         body="\n".join(summary_lines),
     )

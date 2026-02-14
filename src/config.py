@@ -1,57 +1,50 @@
-"""Centralized configuration — Pydantic BaseSettings with env var bindings."""
+"""Centralized configuration via Pydantic BaseSettings.
 
-from __future__ import annotations
+Each service has its own settings class with an env_prefix.
+Settings are only loaded when the specific service is used via ``from_env()``.
+"""
 
-import os
-from functools import lru_cache
-from pathlib import Path
-
-from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
-class SecretsSettings(BaseSettings):
-    """Paths to secret files mounted into the container."""
+class GithubSettings(BaseSettings):
+    """GitHub App authentication paths."""
 
-    webhook_secret_file: str = Field("/secrets/webhook-secret", alias="WEBHOOK_SECRET_FILE")
-    app_id_file: str = Field("/secrets/app-id", alias="APP_ID_FILE")
-    private_key_file: str = Field("/secrets/private-key.pem", alias="PRIVATE_KEY_FILE")
-    gcp_sa_key_file: str = Field("/secrets/gcp-service-account.json", alias="GCP_SA_KEY_FILE")
-    gcp_project_file: str = Field("/secrets/gcp-project", alias="GCP_PROJECT_FILE")
+    app_id_file: str = "/secrets/app-id"
+    private_key_file: str = "/secrets/private-key.pem"
+    webhook_secret_file: str = "/secrets/webhook-secret"
 
-    def read(self, path: str) -> str:
-        """Read and strip a secret file."""
-        return Path(path).read_text().strip()
+    model_config = {"env_prefix": "GITHUB_"}
+
+
+class GcpSettings(BaseSettings):
+    """GCP project and credentials."""
+
+    project: str = ""
+    location: str = "us-central1"
+    sa_key_file: str = "/secrets/gcp-service-account.json"
+    project_file: str = "/secrets/gcp-project"
+
+    model_config = {"env_prefix": "GCP_"}
 
 
 class GeminiSettings(BaseSettings):
-    """Vertex AI / Gemini configuration."""
+    """Gemini model parameters."""
 
-    gcp_project: str = Field("", alias="GCP_PROJECT")
-    gcp_location: str = Field("us-central1", alias="GCP_LOCATION")
-    model: str = Field("gemini-3-pro-preview", alias="GEMINI_MODEL")
+    model: str = "gemini-3-pro-preview"
     temperature: float = 0.7
     max_output_tokens: int = 8192
     timeout: float = 120.0
 
+    model_config = {"env_prefix": "GEMINI_"}
+
 
 class RickySettings(BaseSettings):
-    """Ricky-specific tool configuration."""
+    """Application-level settings."""
 
-    max_pr_lines: int = Field(500, alias="RICKY_MAX_PR_LINES")
-    max_pr_files: int = Field(15, alias="RICKY_MAX_PR_FILES")
-    auto_fix_enabled: bool = Field(False, alias="RICKY_AUTO_FIX_ENABLED")
-    todo_create_issues: bool = Field(True, alias="RICKY_TODO_CREATE_ISSUES")
+    max_pr_lines: int = 500
+    max_pr_files: int = 15
+    auto_fix_enabled: bool = False
+    todo_create_issues: bool = True
 
-
-class Settings(BaseSettings):
-    """Top-level settings container."""
-
-    secrets: SecretsSettings = SecretsSettings()
-    gemini: GeminiSettings = GeminiSettings()
-    ricky: RickySettings = RickySettings()
-
-
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()
+    model_config = {"env_prefix": "RICKY_"}

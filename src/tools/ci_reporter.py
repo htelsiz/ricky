@@ -1,20 +1,13 @@
-"""ci_status_reporter — diagnose CI/CD failures and post analysis.
-
-Triggers on check_suite.completed or check_run.completed when the conclusion
-is a failure. Fetches logs, uses Gemini to diagnose, posts a comment.
-"""
-
-from __future__ import annotations
+"""ci_status_reporter — diagnose CI/CD failures and post analysis."""
 
 import logging
 
 from ..clients.github import GitHubClient
-from ..gemini_client import _call_gemini, FALLBACK_SYSTEM_PROMPT
+from ..gemini_client import GeminiClient
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
-
-_gh = GitHubClient()
+log = logging.getLogger(__name__)
 
 _CI_DIAGNOSIS_PROMPT = """\
 You are Ricky LaFleur from Trailer Park Boys. A CI/CD build just failed.
@@ -33,45 +26,36 @@ The technical advice must be CORRECT even though the delivery is Ricky."""
     events=["check_suite"],
     actions=["completed"],
 )
-async def ci_status_reporter_suite(data: dict) -> None:
+async def ci_status_reporter_suite(ctx: WebhookContext) -> None:
     """Handle check_suite.completed — analyze failures."""
-    check_suite = data.get("check_suite", {})
-    conclusion = check_suite.get("conclusion", "")
-
-    if conclusion not in ("failure", "timed_out"):
+    if ctx.check_suite is None:
         return
 
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-
-    head_sha = check_suite.get("head_sha", "")
-    if not head_sha:
+    if ctx.check_suite.conclusion not in ("failure", "timed_out"):
         return
 
-    # Find the associated PR (if any)
-    prs = check_suite.get("pull_requests", [])
-    if not prs:
-        logger.info("Check suite failure on %s but no associated PR, skipping", head_sha[:8])
+    if not ctx.check_suite.head_sha or not ctx.check_suite.pr_numbers:
+        log.info("Check suite failure but no associated PR, skipping")
         return
 
-    pr_number = prs[0]["number"]
+    gh = GitHubClient.from_env()
+    gemini = GeminiClient.from_env()
 
-    # Get failed check runs for this suite
-    check_runs = await _gh.get_check_runs_for_ref(owner, repo_name, head_sha, installation_id)
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
+    pr_number = ctx.check_suite.pr_numbers[0]
+
+    check_runs = await gh.get_check_runs_for_ref(
+        owner, repo, ctx.check_suite.head_sha, ctx.installation_id,
+    )
     failed_runs = [r for r in check_runs if r.get("conclusion") in ("failure", "timed_out")]
-
     if not failed_runs:
         return
 
-    # Build a summary of failures
     failure_details = []
-    for run in failed_runs[:3]:  # Cap at 3 to avoid huge prompts
+    for run in failed_runs[:3]:
         run_name = run.get("name", "unknown")
         run_id = run.get("id", 0)
-
-        # Try to get the output summary (available without actions:read)
         output = run.get("output", {})
         summary = output.get("summary", "") or output.get("text", "")
 
@@ -85,28 +69,23 @@ async def ci_status_reporter_suite(data: dict) -> None:
 
     log_content = "\n\n".join(failure_details)
 
-    # Ask Gemini to diagnose
-    diagnosis = await _call_gemini(
+    diagnosis = await gemini.generate(
         _CI_DIAGNOSIS_PROMPT,
         f"## Failed CI checks for PR #{pr_number}\n\n{log_content}",
     )
-
     if not diagnosis:
         return
 
-    comment_body = (
-        f"**The fuckin' CI broke, boys.** Here's what happened:\n\n"
-        f"{diagnosis}\n\n"
-        f"---\n"
-        f"*{len(failed_runs)} check(s) failed on commit {head_sha[:8]}*"
+    await gh.post_issue_comment(
+        owner, repo, pr_number, ctx.installation_id,
+        body=(
+            f"**The fuckin' CI broke, boys.** Here's what happened:\n\n"
+            f"{diagnosis}\n\n"
+            f"---\n"
+            f"*{len(failed_runs)} check(s) failed on commit {ctx.check_suite.head_sha[:8]}*"
+        ),
     )
-
-    await _gh.post_issue_comment(
-        owner, repo_name, pr_number, installation_id,
-        body=comment_body,
-    )
-
-    logger.info("Posted CI failure diagnosis on PR #%d", pr_number)
+    log.info("Posted CI failure diagnosis on PR #%d", pr_number)
 
 
 @tool(
@@ -114,54 +93,38 @@ async def ci_status_reporter_suite(data: dict) -> None:
     events=["check_run"],
     actions=["completed"],
 )
-async def ci_status_reporter_run(data: dict) -> None:
+async def ci_status_reporter_run(ctx: WebhookContext) -> None:
     """Handle check_run.completed — analyze individual failures."""
-    check_run = data.get("check_run", {})
-    conclusion = check_run.get("conclusion", "")
-
-    if conclusion not in ("failure", "timed_out"):
+    if ctx.check_run is None:
         return
 
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-
-    # Find associated PR
-    prs = check_run.get("pull_requests", [])
-    if not prs:
+    if ctx.check_run.conclusion not in ("failure", "timed_out"):
         return
 
-    pr_number = prs[0]["number"]
-    run_name = check_run.get("name", "unknown")
+    if not ctx.check_run.pr_numbers:
+        return
 
-    # Get output from the check run itself
-    output = check_run.get("output", {})
-    summary = output.get("summary", "") or output.get("text", "")
-
+    summary = ctx.check_run.output_summary or ctx.check_run.output_text
     if not summary:
-        logger.info("Check run %s failed but no output, skipping diagnosis", run_name)
+        log.info("Check run %s failed but no output, skipping diagnosis", ctx.check_run.name)
         return
 
-    # Cap log size
-    log_text = summary[:5000]
-
-    diagnosis = await _call_gemini(
+    gemini = GeminiClient.from_env()
+    diagnosis = await gemini.generate(
         _CI_DIAGNOSIS_PROMPT,
-        f"## Failed check: {run_name}\n\n{log_text}",
+        f"## Failed check: {ctx.check_run.name}\n\n{summary[:5000]}",
     )
-
     if not diagnosis:
         return
 
-    comment_body = (
-        f"**`{run_name}` just shit the bed, boys.** Here's what I think happened:\n\n"
-        f"{diagnosis}"
-    )
+    gh = GitHubClient.from_env()
+    pr_number = ctx.check_run.pr_numbers[0]
 
-    await _gh.post_issue_comment(
-        owner, repo_name, pr_number, installation_id,
-        body=comment_body,
+    await gh.post_issue_comment(
+        ctx.repo.owner, ctx.repo.name, pr_number, ctx.installation_id,
+        body=(
+            f"**`{ctx.check_run.name}` just shit the bed, boys.** "
+            f"Here's what I think happened:\n\n{diagnosis}"
+        ),
     )
-
-    logger.info("Posted CI run failure diagnosis for %s on PR #%d", run_name, pr_number)
+    log.info("Posted CI run failure diagnosis for %s on PR #%d", ctx.check_run.name, pr_number)

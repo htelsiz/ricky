@@ -1,20 +1,17 @@
 """PR review tool — the core code review functionality."""
 
-from __future__ import annotations
-
 import logging
 import re
 
 from ..clients.github import GitHubClient
 from ..diff_parser import build_diff_prompt, parse_diff, valid_lines_for_path
-from ..gemini_client import generate_reply, generate_review
+from ..gemini_client import GeminiClient
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 MAX_DIFF_CHARS = 100_000
-
-_gh = GitHubClient()
 
 
 @tool(
@@ -22,79 +19,75 @@ _gh = GitHubClient()
     events=["pull_request"],
     actions=["opened", "synchronize", "reopened"],
 )
-async def review_pr(data: dict) -> None:
+async def review_pr(ctx: WebhookContext) -> None:
     """Fetch the diff, send it to Gemini, post the review."""
-    pr = data["pull_request"]
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    assert ctx.pr is not None
+    gh = GitHubClient.from_env()
+    gemini = GeminiClient.from_env()
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    pr_number = pr["number"]
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
+    pr_number = ctx.pr.number
 
-    logger.info("Reviewing PR #%d on %s/%s", pr_number, owner, repo_name)
+    log.info("Reviewing PR #%d on %s/%s", pr_number, owner, repo)
 
-    # Fetch the diff
-    diff = await _gh.fetch_diff(owner, repo_name, pr_number, installation_id)
+    diff = await gh.fetch_diff(owner, repo, pr_number, ctx.installation_id)
     if not diff:
-        logger.warning("Empty diff for PR #%d", pr_number)
+        log.warning("Empty diff for PR #%d", pr_number)
         return
 
     if len(diff) > MAX_DIFF_CHARS:
         diff = diff[:MAX_DIFF_CHARS] + "\n\n... (diff truncated, boys)"
 
-    # Parse diff for structured line info
     parsed_diff = parse_diff(diff)
     if not parsed_diff:
-        logger.info("No reviewable changes in PR #%d (deletions/binary only)", pr_number)
+        log.info("No reviewable changes in PR #%d (deletions/binary only)", pr_number)
         return
     structured_diff = build_diff_prompt(parsed_diff)
 
-    # Try to fetch the repo's styleguide
-    styleguide = await _gh.fetch_file_raw(
-        owner, repo_name, ".gemini/styleguide.md", pr["head"]["ref"], installation_id
-    )
+    styleguide = await gh.fetch_file_raw(
+        owner, repo, ".gemini/styleguide.md", ctx.pr.head_ref, ctx.installation_id,
+    ) or ""
 
-    # Generate review via Gemini (returns structured dict)
-    review = await generate_review(
+    review = await gemini.generate_review(
         diff=diff,
         structured_diff=structured_diff,
-        pr_title=pr.get("title", ""),
-        pr_body=pr.get("body", "") or "",
+        pr_title=ctx.pr.title,
+        pr_body=ctx.pr.body,
         styleguide=styleguide,
     )
 
     summary = review.get("summary", "")
     if not summary and not review.get("comments"):
-        logger.warning("Empty review generated, skipping")
+        log.warning("Empty review generated, skipping")
         return
 
-    commit_sha = pr["head"]["sha"]
+    commit_sha = ctx.pr.head_sha
     posted = 0
 
-    # Post each comment individually on its specific line
     for c in review.get("comments", []):
         valid_lines = valid_lines_for_path(parsed_diff, c["path"])
         if c["line"] not in valid_lines:
-            logger.warning("Dropping comment on %s:%d — line not in diff", c["path"], c["line"])
+            log.warning("Dropping comment on %s:%d — line not in diff", c["path"], c["line"])
             continue
 
-        ok = await _gh.post_pr_comment(
-            owner, repo_name, pr_number, installation_id,
-            body=c["body"],
-            commit_id=commit_sha,
-            path=c["path"],
-            line=c["line"],
-        )
-        if ok:
+        try:
+            await gh.post_pr_comment(
+                owner, repo, pr_number, ctx.installation_id,
+                body=c["body"],
+                commit_id=commit_sha,
+                path=c["path"],
+                line=c["line"],
+            )
             posted += 1
+        except Exception:
+            log.warning("Failed to post comment on %s:%d", c["path"], c["line"])
 
-    logger.info("Posted %d inline comments on PR #%d", posted, pr_number)
+    log.info("Posted %d inline comments on PR #%d", posted, pr_number)
 
-    # Post summary as a top-level review comment
     if summary:
-        await _gh.post_review(
-            owner, repo_name, pr_number, installation_id,
+        await gh.post_review(
+            owner, repo, pr_number, ctx.installation_id,
             commit_id=commit_sha,
             body=summary,
         )
@@ -105,35 +98,30 @@ async def review_pr(data: dict) -> None:
     events=["issue_comment"],
     actions=["created"],
 )
-async def mention_reply(data: dict) -> None:
+async def mention_reply(ctx: WebhookContext) -> None:
     """Reply when someone @mentions ricky in a comment."""
-    comment = data["comment"]
-    body = comment.get("body", "")
-
-    if not re.search(r"@ricky\b", body, re.IGNORECASE):
+    if ctx.comment is None or ctx.issue is None:
         return
 
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
-    issue = data["issue"]
+    if not re.search(r"@ricky\b", ctx.comment.body, re.IGNORECASE):
+        return
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    issue_number = issue["number"]
+    log.info(
+        "Replying to @ricky mention in #%d on %s/%s",
+        ctx.issue.number, ctx.repo.owner, ctx.repo.name,
+    )
 
-    logger.info("Replying to @ricky mention in #%d on %s/%s", issue_number, owner, repo_name)
-
-    reply_body = await generate_reply(
-        question=body,
-        context=f"Issue/PR #{issue_number}: {issue.get('title', '')}",
+    gemini = GeminiClient.from_env()
+    reply_body = await gemini.generate_reply(
+        question=ctx.comment.body,
+        context=f"Issue/PR #{ctx.issue.number}: {ctx.issue.title}",
     )
 
     if not reply_body:
         return
 
-    ok = await _gh.post_issue_comment(
-        owner, repo_name, issue_number, installation_id,
+    gh = GitHubClient.from_env()
+    await gh.post_issue_comment(
+        ctx.repo.owner, ctx.repo.name, ctx.issue.number, ctx.installation_id,
         body=reply_body,
     )
-    if ok:
-        logger.info("Posted reply on #%d", issue_number)

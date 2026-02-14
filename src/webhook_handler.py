@@ -2,7 +2,8 @@
 
 import logging
 
-from .tools._registry import get_tools_for_event, get_tool_for_command
+from .models.github import WebhookContext
+from .tools._registry import get_tools_for_event
 
 # Import tool modules so they register via @tool decorator
 from .tools import review  # noqa: F401
@@ -18,21 +19,21 @@ from .tools import breaking  # noqa: F401
 from .tools import dep_update  # noqa: F401
 from .tools import conflict  # noqa: F401
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 async def handle_webhook(event: str, data: dict) -> None:
     """Route webhook events to all matching registered tools."""
-    action = data.get("action", "")
+    ctx = WebhookContext.from_webhook(event, data)
 
-    tools = get_tools_for_event(event, action)
+    tools = get_tools_for_event(ctx.event, ctx.action)
     if not tools:
-        logger.debug("No tools matched event=%s action=%s", event, action)
+        log.debug("No tools matched event=%s action=%s", ctx.event, ctx.action)
         return
 
     for t in tools:
-        logger.info("Running tool: %s (event=%s, action=%s)", t.name, event, action)
+        log.info("Running tool: %s (event=%s, action=%s)", t.name, ctx.event, ctx.action)
         try:
-            await t.func(data)
+            await t.func(ctx)
         except Exception:
-            logger.exception("Tool %s failed", t.name)
+            log.exception("Tool %s failed", t.name)

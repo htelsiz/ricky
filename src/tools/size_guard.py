@@ -1,20 +1,13 @@
-"""size_guard — PR size enforcement via GitHub Checks API.
-
-Posts a pass/warn/fail check run based on lines changed and files changed.
-"""
-
-from __future__ import annotations
+"""size_guard — PR size enforcement via GitHub Checks API."""
 
 import logging
 
 from ..clients.github import GitHubClient
-from ..config import get_settings
-from ..diff_parser import parse_diff
+from ..config import RickySettings
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
-
-_gh = GitHubClient()
+log = logging.getLogger(__name__)
 
 
 @tool(
@@ -22,32 +15,25 @@ _gh = GitHubClient()
     events=["pull_request"],
     actions=["opened", "synchronize", "reopened"],
 )
-async def size_guard(data: dict) -> None:
+async def size_guard(ctx: WebhookContext) -> None:
     """Check PR size and post a GitHub Check Run."""
-    pr = data["pull_request"]
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    assert ctx.pr is not None
+    gh = GitHubClient.from_env()
+    cfg = RickySettings()  # type: ignore[call-arg]
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    pr_number = pr["number"]
-    head_sha = pr["head"]["sha"]
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
 
-    cfg = get_settings().ricky
-
-    # Fetch diff to count lines
-    diff = await _gh.fetch_diff(owner, repo_name, pr_number, installation_id)
+    diff = await gh.fetch_diff(owner, repo, ctx.pr.number, ctx.installation_id)
     if not diff:
         return
 
-    # Count raw additions/deletions/files from the diff text
     lines_added = 0
     lines_removed = 0
-    files_changed = set()
+    files_changed: set[str] = set()
 
     for line in diff.split("\n"):
         if line.startswith("diff --git"):
-            # Extract file path
             parts = line.split(" b/")
             if len(parts) > 1:
                 files_changed.add(parts[-1])
@@ -59,7 +45,6 @@ async def size_guard(data: dict) -> None:
     total_lines = lines_added + lines_removed
     total_files = len(files_changed)
 
-    # Determine verdict
     over_lines = total_lines > cfg.max_pr_lines
     over_files = total_files > cfg.max_pr_files
 
@@ -92,16 +77,16 @@ async def size_guard(data: dict) -> None:
             f"| Files changed | {total_files} | {cfg.max_pr_files} |"
         )
 
-    await _gh.create_check_run(
-        owner, repo_name, installation_id,
+    await gh.create_check_run(
+        owner, repo, ctx.installation_id,
         name="Ricky / Size Guard",
-        head_sha=head_sha,
+        head_sha=ctx.pr.head_sha,
         conclusion=conclusion,
         title=title,
         summary=summary,
     )
 
-    logger.info(
+    log.info(
         "Size guard for PR #%d: %s (%d lines, %d files)",
-        pr_number, conclusion, total_lines, total_files,
+        ctx.pr.number, conclusion, total_lines, total_files,
     )

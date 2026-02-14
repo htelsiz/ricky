@@ -4,18 +4,15 @@ Scans the diff for changed function signatures, removed exports,
 modified API routes, and schema changes. Posts warnings.
 """
 
-from __future__ import annotations
-
 import logging
 import re
 
 from ..clients.github import GitHubClient
 from ..diff_parser import parse_diff
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
-
-_gh = GitHubClient()
+log = logging.getLogger(__name__)
 
 # Patterns that suggest breaking changes in removed lines (context or removed)
 _BREAKING_PATTERNS = [
@@ -37,23 +34,24 @@ _BREAKING_PATTERNS = [
     events=["pull_request"],
     actions=["opened", "synchronize", "reopened"],
 )
-async def breaking_change_detector(data: dict) -> None:
+async def breaking_change_detector(ctx: WebhookContext) -> None:
     """Detect potential breaking changes in the PR."""
-    pr = data["pull_request"]
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    assert ctx.pr is not None
+    gh = GitHubClient.from_env()
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    pr_number = pr["number"]
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
 
-    diff = await _gh.fetch_diff(owner, repo_name, pr_number, installation_id)
+    diff = await gh.fetch_diff(owner, repo, ctx.pr.number, ctx.installation_id)
     if not diff:
         return
 
-    # Parse the raw diff to find removed lines (not available in parse_diff which only tracks additions)
-    breaking = _scan_for_breaking_changes(diff)
+    # Parse the raw diff to find removed lines
+    parsed = parse_diff(diff)
+    if not parsed:
+        return
 
+    breaking = _scan_for_breaking_changes(diff)
     if not breaking:
         return
 
@@ -71,12 +69,12 @@ async def breaking_change_detector(data: dict) -> None:
         "3. Let consumers know what changed"
     )
 
-    await _gh.post_issue_comment(
-        owner, repo_name, pr_number, installation_id,
+    await gh.post_issue_comment(
+        owner, repo, ctx.pr.number, ctx.installation_id,
         body="\n".join(lines),
     )
 
-    logger.info("Found %d potential breaking change(s) in PR #%d", len(breaking), pr_number)
+    log.info("Found %d potential breaking change(s) in PR #%d", len(breaking), ctx.pr.number)
 
 
 def _scan_for_breaking_changes(raw_diff: str) -> list[dict]:
@@ -100,7 +98,6 @@ def _scan_for_breaking_changes(raw_diff: str) -> list[dict]:
             m = pattern.search(content)
             if m:
                 name = m.group(1)
-                # Check if this was actually modified (re-added with changes) vs removed
                 findings.append({
                     "path": current_file,
                     "name": name,
@@ -110,7 +107,7 @@ def _scan_for_breaking_changes(raw_diff: str) -> list[dict]:
                 break
 
     # Deduplicate by (path, name)
-    seen = set()
+    seen: set[tuple[str, str]] = set()
     unique = []
     for f in findings:
         key = (f["path"], f["name"])

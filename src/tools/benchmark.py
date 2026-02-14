@@ -4,20 +4,17 @@ Scans the diff for common performance anti-patterns using Gemini.
 Posts inline comments for issues found.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import re
 
 from ..clients.github import GitHubClient
 from ..diff_parser import build_diff_prompt, parse_diff, valid_lines_for_path
-from ..gemini_client import _call_gemini
+from ..gemini_client import GeminiClient
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
-
-_gh = GitHubClient()
+log = logging.getLogger(__name__)
 
 _PERF_PROMPT = """\
 You are Ricky LaFleur from Trailer Park Boys, analyzing code for performance problems.
@@ -57,18 +54,16 @@ Rules:
     events=["pull_request"],
     actions=["opened", "synchronize", "reopened"],
 )
-async def quick_benchmark(data: dict) -> None:
+async def quick_benchmark(ctx: WebhookContext) -> None:
     """Scan for performance anti-patterns."""
-    pr = data["pull_request"]
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    assert ctx.pr is not None
+    gh = GitHubClient.from_env()
+    gemini = GeminiClient.from_env()
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    pr_number = pr["number"]
-    commit_sha = pr["head"]["sha"]
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
 
-    diff = await _gh.fetch_diff(owner, repo_name, pr_number, installation_id)
+    diff = await gh.fetch_diff(owner, repo, ctx.pr.number, ctx.installation_id)
     if not diff:
         return
 
@@ -78,11 +73,10 @@ async def quick_benchmark(data: dict) -> None:
 
     structured = build_diff_prompt(parsed)
 
-    raw = await _call_gemini(_PERF_PROMPT, f"Changed lines:\n{structured}")
+    raw = await gemini.generate(_PERF_PROMPT, f"Changed lines:\n{structured}")
     if not raw:
         return
 
-    # Parse response
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
@@ -92,7 +86,7 @@ async def quick_benchmark(data: dict) -> None:
         result = json.loads(cleaned)
         issues = result.get("issues", [])
     except (json.JSONDecodeError, TypeError):
-        logger.warning("Failed to parse performance analysis response")
+        log.warning("Failed to parse performance analysis response")
         return
 
     if not issues:
@@ -113,15 +107,17 @@ async def quick_benchmark(data: dict) -> None:
         if line not in valid_lines:
             continue
 
-        ok = await _gh.post_pr_comment(
-            owner, repo_name, pr_number, installation_id,
-            body=body,
-            commit_id=commit_sha,
-            path=path,
-            line=line,
-        )
-        if ok:
+        try:
+            await gh.post_pr_comment(
+                owner, repo, ctx.pr.number, ctx.installation_id,
+                body=body,
+                commit_id=ctx.pr.head_sha,
+                path=path,
+                line=line,
+            )
             posted += 1
+        except Exception:
+            log.warning("Failed to post perf comment on %s:%d", path, line)
 
     if posted:
-        logger.info("Posted %d performance comments on PR #%d", posted, pr_number)
+        log.info("Posted %d performance comments on PR #%d", posted, ctx.pr.number)

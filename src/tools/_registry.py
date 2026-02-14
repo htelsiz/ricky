@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, TYPE_CHECKING
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from ..models.github import WebhookContext
 
-ToolFunc = Callable[..., Awaitable[None]]
+log = logging.getLogger(__name__)
+
+ToolFunc = Callable[["WebhookContext"], Awaitable[None]]
 
 
 @dataclass
@@ -19,7 +22,7 @@ class ToolDef:
     func: ToolFunc
     events: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
-    commands: list[str] = field(default_factory=list)  # e.g. ["@ricky fix"]
+    commands: list[str] = field(default_factory=list)
 
 
 _tools: list[ToolDef] = []
@@ -36,7 +39,7 @@ def tool(
 
     Usage:
         @tool("size_guard", events=["pull_request"], actions=["opened", "synchronize", "reopened"])
-        async def size_guard(ctx: ToolContext) -> None:
+        async def size_guard(ctx: WebhookContext) -> None:
             ...
     """
     def decorator(func: ToolFunc) -> ToolFunc:

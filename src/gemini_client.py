@@ -1,8 +1,7 @@
-"""Vertex AI client — sends diff + Ricky persona to Gemini 3 Pro."""
+"""Vertex AI client — sends diff + Ricky persona to Gemini."""
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 
@@ -10,13 +9,10 @@ import httpx
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 
-logger = logging.getLogger(__name__)
+from .config import GcpSettings, GeminiSettings
+from .errors import ApiResponseError
 
-GCP_PROJECT = os.environ.get("GCP_PROJECT", "")
-GCP_LOCATION = os.environ.get("GCP_LOCATION", "us-central1")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-pro-preview")
-
-_credentials = None
+log = logging.getLogger(__name__)
 
 FALLBACK_SYSTEM_PROMPT = (
     "You ARE Ricky LaFleur from Trailer Park Boys. You review code in character. "
@@ -26,53 +22,105 @@ FALLBACK_SYSTEM_PROMPT = (
 )
 
 
-def _get_credentials():
-    global _credentials
-    if _credentials is None:
-        key_path = os.environ.get(
-            "GCP_SA_KEY_FILE", "/secrets/gcp-service-account.json"
+class GeminiClient:
+    """Async Gemini client via Vertex AI REST API."""
+
+    service_name = "gemini"
+
+    def __init__(self, gcp: GcpSettings, gemini: GeminiSettings) -> None:
+        self._gcp = gcp
+        self._gemini = gemini
+        self._credentials: service_account.Credentials | None = None
+
+    @classmethod
+    def from_env(cls) -> "GeminiClient":
+        return cls(GcpSettings(), GeminiSettings())  # type: ignore[call-arg]
+
+    # -- internals ------------------------------------------------------------
+
+    def _get_credentials(self) -> service_account.Credentials:
+        if self._credentials is None:
+            self._credentials = service_account.Credentials.from_service_account_file(
+                self._gcp.sa_key_file,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+        if not self._credentials.valid:
+            self._credentials.refresh(Request())
+        return self._credentials
+
+    def _vertex_url(self) -> str:
+        project = self._gcp.project
+        if not project:
+            p = Path(self._gcp.project_file)
+            if p.exists():
+                project = p.read_text().strip()
+        return (
+            f"https://aiplatform.googleapis.com/v1beta1/"
+            f"projects/{project}/locations/global/"
+            f"publishers/google/models/{self._gemini.model}:generateContent"
         )
-        _credentials = service_account.Credentials.from_service_account_file(
-            key_path,
-            scopes=["https://www.googleapis.com/auth/cloud-platform"],
-        )
-    if not _credentials.valid:
-        _credentials.refresh(Request())
-    return _credentials
 
+    def _handle_response(self, resp: httpx.Response) -> None:
+        if resp.status_code >= 400:
+            raise ApiResponseError(self.service_name, resp.status_code, resp.text)
 
-def _vertex_url() -> str:
-    project = GCP_PROJECT
-    if not project:
-        project_file = os.environ.get("GCP_PROJECT_FILE", "/secrets/gcp-project")
-        p = Path(project_file)
-        if p.exists():
-            project = p.read_text().strip()
-    return (
-        f"https://aiplatform.googleapis.com/v1beta1/"
-        f"projects/{project}/locations/global/"
-        f"publishers/google/models/{GEMINI_MODEL}:generateContent"
-    )
+    # -- core API -------------------------------------------------------------
 
+    async def generate(self, system_prompt: str, user_prompt: str) -> str:
+        """Call Gemini and return the generated text."""
+        creds = self._get_credentials()
 
-async def generate_review(
-    diff: str,
-    structured_diff: str,
-    pr_title: str,
-    pr_body: str,
-    styleguide: str,
-) -> dict:
-    """Generate a code review with inline comments using Gemini 3 Pro.
+        body = {
+            "contents": [
+                {"role": "user", "parts": [{"text": user_prompt}]},
+            ],
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "generationConfig": {
+                "temperature": self._gemini.temperature,
+                "maxOutputTokens": self._gemini.max_output_tokens,
+            },
+        }
 
-    Returns:
-        {"summary": str, "comments": [{"path": str, "line": int, "body": str}]}
-    """
-    # Always use Ricky's persona — repo styleguide is supplemental patterns
-    extra = ""
-    if styleguide:
-        extra = f"\n\nAdditional coding patterns to enforce:\n{styleguide}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                self._vertex_url(),
+                headers={
+                    "Authorization": f"Bearer {creds.token}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=self._gemini.timeout,
+            )
 
-    system_prompt = FALLBACK_SYSTEM_PROMPT + extra + """
+        self._handle_response(resp)
+
+        data = resp.json()
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            log.error("Unexpected Gemini response: %s", data)
+            return ""
+
+    # -- high-level methods ---------------------------------------------------
+
+    async def generate_review(
+        self,
+        diff: str,
+        structured_diff: str,
+        pr_title: str,
+        pr_body: str,
+        styleguide: str,
+    ) -> dict:
+        """Generate a structured code review with inline comments.
+
+        Returns:
+            {"summary": str, "comments": [{"path": str, "line": int, "body": str}]}
+        """
+        extra = ""
+        if styleguide:
+            extra = f"\n\nAdditional coding patterns to enforce:\n{styleguide}"
+
+        system_prompt = FALLBACK_SYSTEM_PROMPT + extra + """
 
 ## Your Task
 You are reviewing a pull request. Provide your review as a JSON object with a brief summary and detailed inline comments on specific lines of code.
@@ -119,7 +167,7 @@ Each comment body MUST follow this structure:
 - Every comment must be in character as Ricky
 """
 
-    user_prompt = f"""Review this pull request and provide inline comments on specific lines.
+        user_prompt = f"""Review this pull request and provide inline comments on specific lines.
 
 **Title:** {pr_title}
 
@@ -135,13 +183,12 @@ Each comment body MUST follow this structure:
 ```
 """
 
-    raw = await _call_gemini(system_prompt, user_prompt)
-    return _parse_review_response(raw)
+        raw = await self.generate(system_prompt, user_prompt)
+        return _parse_review_response(raw)
 
-
-async def generate_reply(question: str, context: str) -> str:
-    """Generate a reply to an @ricky mention."""
-    user_prompt = f"""Someone is asking you a question in a GitHub issue/PR.
+    async def generate_reply(self, question: str, context: str) -> str:
+        """Generate a reply to an @ricky mention."""
+        user_prompt = f"""Someone is asking you a question in a GitHub issue/PR.
 
 **Context:** {context}
 
@@ -150,50 +197,7 @@ async def generate_reply(question: str, context: str) -> str:
 
 Reply as Ricky LaFleur. Be helpful but stay in character."""
 
-    return await _call_gemini(FALLBACK_SYSTEM_PROMPT, user_prompt)
-
-
-async def _call_gemini(system_prompt: str, user_prompt: str) -> str:
-    """Call Gemini via Vertex AI REST API."""
-    creds = _get_credentials()
-
-    body = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": user_prompt}],
-            }
-        ],
-        "systemInstruction": {
-            "parts": [{"text": system_prompt}],
-        },
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 8192,
-        },
-    }
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            _vertex_url(),
-            headers={
-                "Authorization": f"Bearer {creds.token}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-            timeout=120.0,
-        )
-
-    if resp.status_code != 200:
-        logger.error("Gemini API error: %d %s", resp.status_code, resp.text)
-        return ""
-
-    data = resp.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError):
-        logger.error("Unexpected Gemini response: %s", data)
-        return ""
+        return await self.generate(FALLBACK_SYSTEM_PROMPT, user_prompt)
 
 
 def _parse_review_response(raw: str) -> dict:
@@ -204,7 +208,6 @@ def _parse_review_response(raw: str) -> dict:
     if not raw:
         return {"summary": "", "comments": []}
 
-    # Strip markdown code fences if Gemini wrapped the JSON
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
@@ -224,9 +227,9 @@ def _parse_review_response(raw: str) -> dict:
                 ):
                     valid_comments.append(c)
                 else:
-                    logger.warning("Dropping malformed comment: %s", c)
+                    log.warning("Dropping malformed comment: %s", c)
             return {"summary": parsed["summary"], "comments": valid_comments}
     except (json.JSONDecodeError, TypeError) as e:
-        logger.warning("Failed to parse JSON review, falling back to raw text: %s", e)
+        log.warning("Failed to parse JSON review, falling back to raw text: %s", e)
 
     return {"summary": raw, "comments": []}

@@ -4,11 +4,12 @@ import collections
 import hashlib
 import hmac
 import logging
-import os
 import traceback
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 
+from .config import GithubSettings
 from .webhook_handler import handle_webhook
 
 # In-memory ring buffer for debug logs (no filesystem needed)
@@ -16,7 +17,7 @@ _log_buffer: collections.deque = collections.deque(maxlen=200)
 
 
 class BufferHandler(logging.Handler):
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         _log_buffer.append(self.format(record))
 
 
@@ -25,7 +26,7 @@ _bh = BufferHandler()
 _bh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
 logging.getLogger().addHandler(_bh)
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 app = FastAPI(title="Ricky", description="Trailer Park Boys Code Reviewer")
 
@@ -35,9 +36,8 @@ _webhook_secret: bytes | None = None
 def _get_webhook_secret() -> bytes:
     global _webhook_secret
     if _webhook_secret is None:
-        path = os.environ.get("WEBHOOK_SECRET_FILE", "/secrets/webhook-secret")
-        with open(path) as f:
-            _webhook_secret = f.read().strip().encode()
+        cfg = GithubSettings()  # type: ignore[call-arg]
+        _webhook_secret = Path(cfg.webhook_secret_file).read_text().strip().encode()
     return _webhook_secret
 
 
@@ -52,12 +52,12 @@ def _verify_signature(payload: bytes, signature: str) -> bool:
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict:
     return {"status": "ok"}
 
 
 @app.get("/debug/logs")
-async def debug_logs():
+async def debug_logs() -> dict:
     return {"logs": list(_log_buffer)}
 
 
@@ -66,19 +66,19 @@ async def webhook(
     request: Request,
     x_hub_signature_256: str = Header(None),
     x_github_event: str = Header(None),
-):
+) -> dict:
     payload = await request.body()
 
     if not _verify_signature(payload, x_hub_signature_256):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     event_data = await request.json()
-    logger.info("Received event: %s, action: %s", x_github_event, event_data.get("action"))
+    log.info("Received event: %s, action: %s", x_github_event, event_data.get("action"))
 
     try:
         await handle_webhook(x_github_event, event_data)
     except Exception:
-        logger.error("Webhook handler failed:\n%s", traceback.format_exc())
+        log.error("Webhook handler failed:\n%s", traceback.format_exc())
         raise
 
     return {"status": "ok"}

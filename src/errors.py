@@ -1,30 +1,34 @@
-"""Custom error hierarchy for Ricky."""
+"""Exception hierarchy for ricky."""
 
 
-class AgentError(Exception):
-    """Base error for all Ricky operations."""
+class RickyError(Exception):
+    """Base exception for all ricky errors."""
 
 
-class GitHubError(AgentError):
-    """GitHub API call failed."""
-
-    def __init__(self, status: int, message: str, endpoint: str = ""):
-        self.status = status
-        self.endpoint = endpoint
-        super().__init__(f"GitHub {status} on {endpoint}: {message}")
+class ConfigError(RickyError):
+    """Missing or invalid configuration (env vars, secret files)."""
 
 
-class GeminiError(AgentError):
-    """Gemini / Vertex AI call failed."""
+class ServiceError(RickyError):
+    """Base for all service communication errors."""
 
-    def __init__(self, status: int, message: str):
-        self.status = status
-        super().__init__(f"Gemini {status}: {message}")
+    def __init__(self, service: str, message: str) -> None:
+        self.service = service
+        super().__init__(f"{service}: {message}")
 
 
-class ToolError(AgentError):
-    """A tool failed during execution."""
+class AuthenticationError(ServiceError):
+    """Authentication failed (bad credentials or expired token)."""
 
-    def __init__(self, tool_name: str, message: str):
-        self.tool_name = tool_name
-        super().__init__(f"[{tool_name}] {message}")
+
+class NotFoundError(ServiceError):
+    """Requested resource was not found."""
+
+
+class ApiResponseError(ServiceError):
+    """Unexpected HTTP response from a service."""
+
+    def __init__(self, service: str, status_code: int, body: str = "") -> None:
+        self.status_code = status_code
+        self.body = body
+        super().__init__(service, f"HTTP {status_code}: {body[:200]}")

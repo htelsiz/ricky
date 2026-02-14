@@ -4,17 +4,14 @@ Checks which files in the PR have been changed frequently (hot files)
 and posts context about the change history.
 """
 
-from __future__ import annotations
-
 import logging
 
 from ..clients.github import GitHubClient
 from ..diff_parser import parse_diff
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
-
-_gh = GitHubClient()
+log = logging.getLogger(__name__)
 
 # Threshold: if a file appears in >N recent commits, flag as hot
 HOT_FILE_THRESHOLD = 10
@@ -25,17 +22,15 @@ HOT_FILE_THRESHOLD = 10
     events=["pull_request"],
     actions=["opened", "synchronize", "reopened"],
 )
-async def git_blame_context(data: dict) -> None:
+async def git_blame_context(ctx: WebhookContext) -> None:
     """Identify hot files and surface change history context."""
-    pr = data["pull_request"]
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    assert ctx.pr is not None
+    gh = GitHubClient.from_env()
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    pr_number = pr["number"]
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
 
-    diff = await _gh.fetch_diff(owner, repo_name, pr_number, installation_id)
+    diff = await gh.fetch_diff(owner, repo, ctx.pr.number, ctx.installation_id)
     if not diff:
         return
 
@@ -47,22 +42,19 @@ async def git_blame_context(data: dict) -> None:
     if len(parsed) < 2:
         return
 
-    # Check commit history for each file to find hot files
     hot_files = []
     for file_info in parsed:
         path = file_info["path"]
-        resp = await _gh.request(
-            "GET",
-            f"/repos/{owner}/{repo_name}/commits",
-            installation_id,
-            params={"path": path, "per_page": 20},
-        )
-        if resp.status_code != 200:
+        try:
+            commits = await gh.get_commits(
+                owner, repo, ctx.installation_id,
+                path=path,
+                per_page=20,
+            )
+        except Exception:
             continue
 
-        commits = resp.json()
         if len(commits) >= HOT_FILE_THRESHOLD:
-            # Get the most recent committer
             last_author = "unknown"
             if commits and commits[0].get("commit", {}).get("author"):
                 last_author = commits[0]["commit"]["author"].get("name", "unknown")
@@ -88,9 +80,9 @@ async def git_blame_context(data: dict) -> None:
         "every time someone touches them, something breaks."
     )
 
-    await _gh.post_issue_comment(
-        owner, repo_name, pr_number, installation_id,
+    await gh.post_issue_comment(
+        owner, repo, ctx.pr.number, ctx.installation_id,
         body="\n".join(lines),
     )
 
-    logger.info("Found %d hot file(s) in PR #%d", len(hot_files), pr_number)
+    log.info("Found %d hot file(s) in PR #%d", len(hot_files), ctx.pr.number)

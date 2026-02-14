@@ -4,8 +4,6 @@ Triggered by @ricky outdated command. Checks package registries
 and posts a report of outdated dependencies.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import re
@@ -13,11 +11,10 @@ import re
 import httpx
 
 from ..clients.github import GitHubClient
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
-
-_gh = GitHubClient()
+log = logging.getLogger(__name__)
 
 
 @tool(
@@ -26,35 +23,32 @@ _gh = GitHubClient()
     actions=["created"],
     commands=["@ricky outdated"],
 )
-async def dependency_update_bot(data: dict) -> None:
+async def dependency_update_bot(ctx: WebhookContext) -> None:
     """Check for outdated packages when asked."""
-    comment = data["comment"]
-    body = comment.get("body", "")
-
-    if "@ricky" not in body.lower() or "outdated" not in body.lower():
+    if ctx.comment is None or ctx.issue is None:
         return
 
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
-    issue = data["issue"]
+    if "@ricky" not in ctx.comment.body.lower() or "outdated" not in ctx.comment.body.lower():
+        return
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    issue_number = issue["number"]
+    gh = GitHubClient.from_env()
 
-    logger.info("Checking outdated deps for %s/%s", owner, repo_name)
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
+
+    log.info("Checking outdated deps for %s/%s", owner, repo)
 
     # Try to fetch pyproject.toml
-    pyproject = await _gh.fetch_file_raw(
-        owner, repo_name, "pyproject.toml", "main", installation_id
+    pyproject = await gh.fetch_file_raw(
+        owner, repo, "pyproject.toml", "main", ctx.installation_id,
     )
 
     # Try to fetch package.json
-    package_json = await _gh.fetch_file_raw(
-        owner, repo_name, "package.json", "main", installation_id
+    package_json = await gh.fetch_file_raw(
+        owner, repo, "package.json", "main", ctx.installation_id,
     )
 
-    outdated = []
+    outdated: list[dict] = []
 
     if pyproject:
         outdated.extend(await _check_python_deps(pyproject))
@@ -63,15 +57,15 @@ async def dependency_update_bot(data: dict) -> None:
         outdated.extend(await _check_npm_deps(package_json))
 
     if not pyproject and not package_json:
-        await _gh.post_issue_comment(
-            owner, repo_name, issue_number, installation_id,
+        await gh.post_issue_comment(
+            owner, repo, ctx.issue.number, ctx.installation_id,
             body="Couldn't find pyproject.toml or package.json in this repo, boys.",
         )
         return
 
     if not outdated:
-        await _gh.post_issue_comment(
-            owner, repo_name, issue_number, installation_id,
+        await gh.post_issue_comment(
+            owner, repo, ctx.issue.number, ctx.installation_id,
             body="Your shit's all up to date, boys. Decent!",
         )
         return
@@ -87,8 +81,8 @@ async def dependency_update_bot(data: dict) -> None:
         "without changing the oil — eventually it's gonna break down."
     )
 
-    await _gh.post_issue_comment(
-        owner, repo_name, issue_number, installation_id,
+    await gh.post_issue_comment(
+        owner, repo, ctx.issue.number, ctx.installation_id,
         body="\n".join(lines),
     )
 
@@ -97,7 +91,6 @@ async def _check_python_deps(pyproject: str) -> list[dict]:
     """Check Python dependencies against PyPI."""
     outdated = []
 
-    # Extract dependencies from pyproject.toml
     deps_match = re.search(r'dependencies\s*=\s*\[(.*?)\]', pyproject, re.DOTALL)
     if not deps_match:
         return []
@@ -130,7 +123,7 @@ async def _check_npm_deps(package_json_text: str) -> list[dict]:
     except json.JSONDecodeError:
         return []
 
-    all_deps = {}
+    all_deps: dict[str, str] = {}
     all_deps.update(pkg.get("dependencies", {}))
     all_deps.update(pkg.get("devDependencies", {}))
 

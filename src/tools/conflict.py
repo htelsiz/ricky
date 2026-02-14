@@ -3,17 +3,14 @@
 When a PR has merge conflicts, posts analysis and resolution suggestions.
 """
 
-from __future__ import annotations
-
 import logging
 
 from ..clients.github import GitHubClient
-from ..gemini_client import _call_gemini
+from ..gemini_client import GeminiClient
+from ..models.github import WebhookContext
 from ._registry import tool
 
-logger = logging.getLogger(__name__)
-
-_gh = GitHubClient()
+log = logging.getLogger(__name__)
 
 _CONFLICT_PROMPT = """\
 You are Ricky LaFleur from Trailer Park Boys. A PR has merge conflicts.
@@ -28,42 +25,28 @@ Stay in character. Use Rickyisms. Keep it practical."""
     events=["pull_request"],
     actions=["opened", "synchronize", "reopened"],
 )
-async def merge_conflict_resolver(data: dict) -> None:
+async def merge_conflict_resolver(ctx: WebhookContext) -> None:
     """Check for merge conflicts and post resolution advice."""
-    pr = data["pull_request"]
+    assert ctx.pr is not None
 
-    # GitHub tells us if mergeable
-    mergeable = pr.get("mergeable")
-    # mergeable can be None (not yet computed), True, or False
-    if mergeable is not False:
+    # GitHub tells us if mergeable — can be None (not yet computed), True, or False
+    if ctx.pr.mergeable is not False:
         return
 
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    gh = GitHubClient.from_env()
+    gemini = GeminiClient.from_env()
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    pr_number = pr["number"]
-    base_ref = pr.get("base", {}).get("ref", "main")
-    head_ref = pr.get("head", {}).get("ref", "unknown")
+    owner = ctx.repo.owner
+    repo = ctx.repo.name
 
-    logger.info("PR #%d has merge conflicts", pr_number)
+    log.info("PR #%d has merge conflicts", ctx.pr.number)
 
-    # Get the list of conflicting files from the PR
-    resp = await _gh.request(
-        "GET",
-        f"/repos/{owner}/{repo_name}/pulls/{pr_number}/files",
-        installation_id,
-    )
-    if resp.status_code != 200:
-        return
-
-    files = resp.json()
+    files = await gh.get_pull_files(owner, repo, ctx.pr.number, ctx.installation_id)
     file_list = [f.get("filename", "") for f in files[:20]]
 
-    diagnosis = await _call_gemini(
+    diagnosis = await gemini.generate(
         _CONFLICT_PROMPT,
-        f"PR #{pr_number}: merging `{head_ref}` into `{base_ref}`\n\n"
+        f"PR #{ctx.pr.number}: merging `{ctx.pr.head_ref}` into `{ctx.pr.base_ref}`\n\n"
         f"Files in this PR:\n" + "\n".join(f"- {f}" for f in file_list),
     )
 
@@ -72,19 +55,19 @@ async def merge_conflict_resolver(data: dict) -> None:
 
     comment = (
         f"**Everyone's stepping on each other's dicks here, boys.**\n\n"
-        f"This PR has merge conflicts with `{base_ref}`.\n\n"
+        f"This PR has merge conflicts with `{ctx.pr.base_ref}`.\n\n"
         f"{diagnosis}\n\n"
         f"To fix it:\n"
         f"```bash\n"
-        f"git checkout {head_ref}\n"
-        f"git merge {base_ref}\n"
+        f"git checkout {ctx.pr.head_ref}\n"
+        f"git merge {ctx.pr.base_ref}\n"
         f"# resolve conflicts\n"
         f"git add . && git commit\n"
         f"git push\n"
         f"```"
     )
 
-    await _gh.post_issue_comment(
-        owner, repo_name, pr_number, installation_id,
+    await gh.post_issue_comment(
+        owner, repo, ctx.pr.number, ctx.installation_id,
         body=comment,
     )
