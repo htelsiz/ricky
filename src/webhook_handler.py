@@ -9,6 +9,14 @@ from .tools import review  # noqa: F401
 from .tools import size_guard  # noqa: F401
 from .tools import todo_tracker  # noqa: F401
 from .tools import ci_reporter  # noqa: F401
+from .tools import auto_fix  # noqa: F401
+from .tools import test_coverage  # noqa: F401
+from .tools import dead_code  # noqa: F401
+from .tools import benchmark  # noqa: F401
+from .tools import blame  # noqa: F401
+from .tools import breaking  # noqa: F401
+from .tools import dep_update  # noqa: F401
+from .tools import conflict  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
