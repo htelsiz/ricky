@@ -73,61 +73,51 @@ async def handle_pull_request(data: dict) -> None:
         logger.warning("Empty review generated, skipping")
         return
 
-    # Build inline comments, validating each against the parsed diff
-    inline_comments = []
+    commit_sha = pr["head"]["sha"]
+    posted = 0
+
+    # Post each comment individually on its specific line
     for c in review.get("comments", []):
         valid_lines = valid_lines_for_path(parsed_diff, c["path"])
-        if c["line"] in valid_lines:
-            inline_comments.append({
-                "path": c["path"],
-                "line": c["line"],
-                "side": "RIGHT",
-                "body": c["body"],
-            })
-        else:
+        if c["line"] not in valid_lines:
             logger.warning(
                 "Dropping comment on %s:%d — line not in diff",
                 c["path"], c["line"],
             )
+            continue
 
-    commit_sha = pr["head"]["sha"]
-
-    if inline_comments:
-        payload = {
-            "commit_id": commit_sha,
-            "body": summary,
-            "event": "COMMENT",
-            "comments": inline_comments,
-        }
-    else:
-        # Fallback: no valid inline comments, post summary as body
-        payload = {"commit_id": commit_sha, "body": summary, "event": "COMMENT"}
-
-    # Post the review
-    resp = await github_api(
-        "POST",
-        f"/repos/{owner}/{repo_name}/pulls/{pr_number}/reviews",
-        installation_id,
-        json=payload,
-    )
-
-    if resp.status_code in (200, 201):
-        logger.info("Posted review on PR #%d (%d inline comments)", pr_number, len(inline_comments))
-    else:
-        logger.error("Failed to post review: %d %s", resp.status_code, resp.text)
-        # If inline comments caused failure, retry with just the summary
-        if inline_comments:
-            logger.info("Retrying without inline comments")
-            fallback_resp = await github_api(
-                "POST",
-                f"/repos/{owner}/{repo_name}/pulls/{pr_number}/reviews",
-                installation_id,
-                json={"commit_id": commit_sha, "body": summary, "event": "COMMENT"},
+        resp = await github_api(
+            "POST",
+            f"/repos/{owner}/{repo_name}/pulls/{pr_number}/comments",
+            installation_id,
+            json={
+                "body": c["body"],
+                "commit_id": commit_sha,
+                "path": c["path"],
+                "line": c["line"],
+                "side": "RIGHT",
+            },
+        )
+        if resp.status_code in (200, 201):
+            posted += 1
+        else:
+            logger.warning(
+                "Failed to post comment on %s:%d: %d %s",
+                c["path"], c["line"], resp.status_code, resp.text,
             )
-            if fallback_resp.status_code in (200, 201):
-                logger.info("Posted fallback review on PR #%d", pr_number)
-            else:
-                logger.error("Fallback review also failed: %d %s", fallback_resp.status_code, fallback_resp.text)
+
+    logger.info("Posted %d inline comments on PR #%d", posted, pr_number)
+
+    # Post summary as a top-level review comment
+    if summary:
+        resp = await github_api(
+            "POST",
+            f"/repos/{owner}/{repo_name}/pulls/{pr_number}/reviews",
+            installation_id,
+            json={"commit_id": commit_sha, "body": summary, "event": "COMMENT"},
+        )
+        if resp.status_code not in (200, 201):
+            logger.error("Failed to post summary review: %d %s", resp.status_code, resp.text)
 
 
 async def handle_comment(data: dict) -> None:
