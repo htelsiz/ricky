@@ -17,6 +17,8 @@ let
       httpx
       google-auth
       requests
+      pydantic
+      pydantic-settings
     ]
   );
 in
