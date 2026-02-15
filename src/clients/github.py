@@ -468,3 +468,81 @@ class GitHubClient:
             params=params,
         )
         return resp.json()
+
+    # -- git data API (low-level commit creation) -----------------------------
+
+    async def get_commit(
+        self, owner: str, repo: str, sha: str, installation_id: int,
+    ) -> dict:
+        """Get a commit object. Returns the full commit JSON."""
+        resp = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/git/commits/{sha}",
+            installation_id,
+        )
+        return resp.json()
+
+    async def create_blob(
+        self, owner: str, repo: str, installation_id: int,
+        *, content: str, encoding: str = "utf-8",
+    ) -> str:
+        """Create a git blob. Returns the blob SHA."""
+        resp = await self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/blobs",
+            installation_id,
+            json={"content": content, "encoding": encoding},
+        )
+        return resp.json()["sha"]
+
+    async def create_tree(
+        self, owner: str, repo: str, installation_id: int,
+        *, base_tree: str, tree_items: list[dict],
+    ) -> str:
+        """Create a git tree. Returns the tree SHA.
+
+        tree_items: [{"path": "src/foo.py", "mode": "100644", "type": "blob", "sha": "..."}]
+        """
+        resp = await self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/trees",
+            installation_id,
+            json={"base_tree": base_tree, "tree": tree_items},
+        )
+        return resp.json()["sha"]
+
+    async def create_git_commit(
+        self, owner: str, repo: str, installation_id: int,
+        *, message: str, tree_sha: str, parent_shas: list[str],
+    ) -> str:
+        """Create a git commit object. Returns the commit SHA."""
+        resp = await self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/commits",
+            installation_id,
+            json={"message": message, "tree": tree_sha, "parents": parent_shas},
+        )
+        return resp.json()["sha"]
+
+    async def update_ref(
+        self, owner: str, repo: str, installation_id: int,
+        *, ref: str, sha: str,
+    ) -> None:
+        """Update a git ref (branch pointer). Raises ApiResponseError on conflict."""
+        await self._request(
+            "PATCH",
+            f"/repos/{owner}/{repo}/git/refs/heads/{ref}",
+            installation_id,
+            json={"sha": sha},
+        )
+
+    async def get_pr(
+        self, owner: str, repo: str, pr_number: int, installation_id: int,
+    ) -> dict:
+        """Get PR details (needed to resolve head branch/sha from issue context)."""
+        resp = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/pulls/{pr_number}",
+            installation_id,
+        )
+        return resp.json()

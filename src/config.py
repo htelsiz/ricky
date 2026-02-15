@@ -45,6 +45,7 @@ class RickySettings(BaseSettings):
     max_pr_lines: int = 500
     max_pr_files: int = 15
     auto_fix_enabled: bool = False
+    auto_fix_max_files: int = 10
     todo_create_issues: bool = True
 
     model_config = {"env_prefix": "RICKY_"}
