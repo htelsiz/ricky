@@ -285,6 +285,35 @@ class GitHubClient:
         )
         return resp.json()
 
+    async def list_issues(
+        self,
+        owner: str,
+        repo: str,
+        installation_id: int,
+        *,
+        labels: list[str] | None = None,
+        state: str = "open",
+        max_pages: int = 3,
+    ) -> list[dict]:
+        """List issues, optionally filtered by labels and state."""
+        all_items: list[dict] = []
+        per_page = 100
+        params: dict = {"per_page": per_page, "state": state}
+        if labels:
+            params["labels"] = ",".join(labels)
+        for page in range(1, max_pages + 1):
+            resp = await self._request(
+                "GET",
+                f"/repos/{owner}/{repo}/issues",
+                installation_id,
+                params={**params, "page": page},
+            )
+            items = resp.json()
+            all_items.extend(items)
+            if len(items) < per_page:
+                break
+        return [i for i in all_items if "pull_request" not in i]
+
     async def get_check_runs_for_ref(
         self, owner: str, repo: str, ref: str, installation_id: int,
     ) -> list[dict]:

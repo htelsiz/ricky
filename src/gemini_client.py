@@ -4,13 +4,36 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import TypeVar, overload
 
 import httpx
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
+from pydantic import BaseModel, ValidationError
 
 from .config import GcpSettings, GeminiSettings
 from .errors import ApiResponseError
+
+T = TypeVar("T", bound=BaseModel)
+
+
+def _vertex_schema(model: type[BaseModel]) -> dict:
+    """Pydantic JSON schema with $defs inlined — Vertex AI's responseSchema does
+    not accept $ref/$defs, so resolve them in place."""
+    schema = model.model_json_schema()
+    defs = schema.pop("$defs", {})
+
+    def resolve(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if ref:
+                return resolve(defs[ref.rsplit("/", 1)[-1]])
+            return {k: resolve(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [resolve(x) for x in node]
+        return node
+
+    return resolve(schema)
 
 log = logging.getLogger(__name__)
 
@@ -66,19 +89,43 @@ class GeminiClient:
 
     # -- core API -------------------------------------------------------------
 
-    async def generate(self, system_prompt: str, user_prompt: str) -> str:
-        """Call Gemini and return the generated text."""
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        thinking_budget: int | None = None,
+        response_mime_type: str | None = None,
+        response_schema: dict | None = None,
+    ) -> str:
+        """Call Gemini and return the generated text.
+
+        thinking_budget: 0 disables thinking, -1 = dynamic (default), positive = fixed
+                         token budget. Set 0 for short JSON extraction so Gemini 3.1 Pro
+                         doesn't burn the output budget on internal reasoning.
+        response_mime_type: pass "application/json" for native JSON output (no markdown
+                            fences to strip).
+        response_schema: JSON schema dict for structured output (requires JSON mime type).
+        """
         creds = self._get_credentials()
+
+        generation_config: dict = {
+            "temperature": self._gemini.temperature,
+            "maxOutputTokens": self._gemini.max_output_tokens,
+        }
+        if thinking_budget is not None:
+            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+        if response_mime_type:
+            generation_config["responseMimeType"] = response_mime_type
+        if response_schema:
+            generation_config["responseSchema"] = response_schema
 
         body = {
             "contents": [
                 {"role": "user", "parts": [{"text": user_prompt}]},
             ],
             "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "generationConfig": {
-                "temperature": self._gemini.temperature,
-                "maxOutputTokens": self._gemini.max_output_tokens,
-            },
+            "generationConfig": generation_config,
         }
 
         async with httpx.AsyncClient() as client:
@@ -100,6 +147,59 @@ class GeminiClient:
         except (KeyError, IndexError):
             log.error("Unexpected Gemini response: %s", data)
             return ""
+
+    @overload
+    async def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        model: type[T],
+        thinking_budget: int = 0,
+    ) -> T | None: ...
+
+    @overload
+    async def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        thinking_budget: int = 0,
+    ) -> dict | list | None: ...
+
+    async def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        model: type[BaseModel] | None = None,
+        thinking_budget: int = 0,
+    ):
+        """Call Gemini with native JSON mime type and parse the result.
+
+        Pass ``model=`` to get a validated Pydantic instance back; the schema
+        is derived from the model and the response is validated against it.
+        Without it, returns the raw parsed JSON.
+
+        Defaults thinking_budget=0 since structured extraction rarely benefits
+        from extended reasoning.
+        """
+        raw = await self.generate(
+            system_prompt,
+            user_prompt,
+            thinking_budget=thinking_budget,
+            response_mime_type="application/json",
+            response_schema=_vertex_schema(model) if model else None,
+        )
+        if not raw:
+            return None
+        try:
+            if model:
+                return model.model_validate_json(raw)
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValidationError) as e:
+            log.warning("Failed to parse JSON response: %s\nRaw: %s", e, raw[:500])
+            return None
 
     # -- high-level methods ---------------------------------------------------
 

@@ -157,7 +157,7 @@ src/
 |----------|---------|---------|
 | `GCP_PROJECT` | (from file) | GCP project for Vertex AI |
 | `GCP_LOCATION` | `global` | Vertex AI endpoint location |
-| `GEMINI_MODEL` | `gemini-3-pro-preview` | Model to use |
+| `GEMINI_MODEL` | `gemini-3.1-pro-preview` | Model to use |
 | `RICKY_MAX_PR_LINES` | `500` | Size guard line threshold |
 | `RICKY_MAX_PR_FILES` | `15` | Size guard file threshold |
 | `RICKY_AUTO_FIX_ENABLED` | `false` | Enable @ricky fix (opt-in) |
